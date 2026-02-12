@@ -1,11 +1,5 @@
-// ===============================
-// 🔐 ENVIRONMENT SETUP
-// ===============================
 require("dotenv").config();
 
-// ===============================
-// 📦 IMPORTS
-// ===============================
 const {
   Client,
   GatewayIntentBits,
@@ -14,229 +8,140 @@ const {
   EmbedBuilder
 } = require("discord.js");
 
-const cron = require("node-cron");
-const db = require("./src/db");
-const { checkForPositionChanges } = require("./src/announcer");
+const express = require("express");
+const fetch = require("node-fetch");
 
 // ===============================
-// 🔑 CONSTANTS
+// ENV VARIABLES
 // ===============================
-const TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = "1467611030455587053";
-const GUILD_ID = "1382715146979508234";
-const ANNOUNCE_CHANNEL_ID = "1466597846752034947";
+
+const {
+  DISCORD_TOKEN,
+  CLIENT_ID,
+  GUILD_ID,
+  ANNOUNCE_CHANNEL_ID,
+  IRACING_CLIENT_ID,
+  IRACING_CLIENT_SECRET,
+  IRACING_REDIRECT_URI
+} = process.env;
+
+if (!DISCORD_TOKEN) {
+  console.error("❌ DISCORD_TOKEN missing.");
+  process.exit(1);
+}
 
 // ===============================
-// 🤖 CREATE CLIENT
+// DISCORD CLIENT
 // ===============================
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
 // ===============================
-// ✅ BOT READY
+// EXPRESS SERVER (OAUTH)
 // ===============================
-client.once("ready", () => {
-  console.log("✅ Bot is logged into Discord!");
 
-  // Initial snapshot after startup
-  setTimeout(() => {
-    console.log("📊 Initial leaderboard snapshot");
-    checkForPositionChanges(client, ANNOUNCE_CHANNEL_ID);
-  }, 5000);
+const app = express();
+app.use(express.json());
 
-  // Check every minute
-  setInterval(() => {
-    console.log("🔄 Checking for leaderboard changes...");
-    checkForPositionChanges(client, ANNOUNCE_CHANNEL_ID);
-  }, 60 * 1000);
+const PORT = process.env.PORT || 3000;
 
-  // 🕖 Daily leaderboard post (12:00 PM local time)
-  cron.schedule("0 12 * * *", () => {
-    const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
-    if (!channel) return;
+// Login route (redirects to iRacing)
+app.get("/oauth/login", (req, res) => {
+  const authUrl =
+    "https://oauth.iracing.com/oauth2/authorize?" +
+    `response_type=code` +
+    `&client_id=${IRACING_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
+    `&scope=openid` +
+    `&audience=data-server`;
 
-    const drivers = db.prepare(`
-      SELECT * FROM drivers
-      ORDER BY irating DESC
-    `).all();
+  res.redirect(authUrl);
+});
 
-    let description = "";
-    drivers.forEach((driver, index) => {
-      description += `${index + 1}️⃣ **${driver.name}** — ${driver.irating}\n`;
-    });
+// Callback route
+app.get("/oauth/callback", async (req, res) => {
+  const code = req.query.code;
 
-    const embed = new EmbedBuilder()
-      .setTitle("🏁 GSR Daily iRating Leaderboard")
-      .setColor(0xff0000)
-      .setDescription(description)
-      .setFooter({ text: "Daily automatic update" });
+  if (!code) {
+    return res.status(400).send("Missing authorization code.");
+  }
 
-    channel.send({ embeds: [embed] });
-  });
+  try {
+    const tokenResponse = await fetch(
+      "https://oauth.iracing.com/oauth2/token",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code,
+          redirect_uri: IRACING_REDIRECT_URI,
+          client_id: IRACING_CLIENT_ID,
+          client_secret: IRACING_CLIENT_SECRET
+        })
+      }
+    );
+
+    const tokenData = await tokenResponse.json();
+
+    console.log("✅ OAuth Success:", tokenData);
+
+    res.send("✅ iRacing account successfully linked! You may close this window.");
+  } catch (err) {
+    console.error("❌ OAuth Error:", err);
+    res.status(500).send("OAuth failed.");
+  }
+});
+
+// Start Express
+app.listen(PORT, () => {
+  console.log(`🌐 OAuth server running on port ${PORT}`);
 });
 
 // ===============================
-// 💬 SLASH COMMAND HANDLER
+// BOT READY
 // ===============================
+
+client.once("ready", () => {
+  console.log("✅ Bot is logged into Discord!");
+});
+
+// ===============================
+// SLASH COMMAND HANDLER
+// ===============================
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  try {
-    // /ping
-    if (interaction.commandName === "ping") {
-      return interaction.reply("🏁 Pong! Slash command works.");
-    }
+  if (interaction.commandName === "ping") {
+    return interaction.reply("🏁 Pong! Bot is alive.");
+  }
 
-    // /leaderboard
-    if (interaction.commandName === "leaderboard") {
-      const drivers = db.prepare(`
-        SELECT * FROM drivers
-        ORDER BY irating DESC
-      `).all();
+  if (interaction.commandName === "link") {
+    const loginUrl = `${IRACING_REDIRECT_URI.replace(
+      "/oauth/callback",
+      ""
+    )}/oauth/login`;
 
-      let description = "";
-      drivers.forEach((driver, index) => {
-        description += `${index + 1}️⃣ **${driver.name}** — ${driver.irating}\n`;
-      });
-
-      const embed = new EmbedBuilder()
-        .setTitle("🏁 GSR iRating Leaderboard")
-        .setColor(0xff0000)
-        .setDescription(description)
-        .setFooter({ text: "Auto-tracked leaderboard" });
-
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    // /setirating (ROLE LOCKED)
-    if (interaction.commandName === "setirating") {
-      await interaction.deferReply({ ephemeral: true });
-
-      const allowedRole = "Admin";
-      const hasRole = interaction.member.roles.cache.some(
-        role => role.name === allowedRole
-      );
-
-      if (!hasRole) {
-        return interaction.editReply(
-          `❌ You must have the **${allowedRole}** role to use this command.`
-        );
-      }
-
-      const driverName = interaction.options.getString("driver");
-      const newIRating = interaction.options.getInteger("irating");
-
-      const result = db.prepare(
-        "UPDATE drivers SET irating = ? WHERE name = ?"
-      ).run(newIRating, driverName);
-
-      if (result.changes === 0) {
-        return interaction.editReply(
-          `❌ Driver **${driverName}** not found.`
-        );
-      }
-
-      return interaction.editReply(
-        `✅ Updated **${driverName}** to **${newIRating} iRating**`
-      );
-    }
-
-    // /forcepost (ROLE LOCKED)
-    if (interaction.commandName === "forcepost") {
-      await interaction.deferReply({ ephemeral: true });
-
-      const allowedRole = "Admin";
-      const hasRole = interaction.member.roles.cache.some(
-        role => role.name === allowedRole
-      );
-
-      if (!hasRole) {
-        return interaction.editReply(
-          `❌ You must have the **${allowedRole}** role to use this command.`
-        );
-      }
-
-      const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
-      if (!channel) {
-        return interaction.editReply("❌ Announcement channel not found.");
-      }
-
-      const drivers = db.prepare(`
-        SELECT * FROM drivers
-        ORDER BY irating DESC
-      `).all();
-
-      let description = "";
-      drivers.forEach((driver, index) => {
-        description += `${index + 1}️⃣ **${driver.name}** — ${driver.irating}\n`;
-      });
-
-      const embed = new EmbedBuilder()
-        .setTitle("🏁 GSR iRating Leaderboard")
-        .setColor(0xff0000)
-        .setDescription(description)
-        .setFooter({ text: "Manually posted" });
-
-      await channel.send({ embeds: [embed] });
-      return interaction.editReply("✅ Leaderboard posted.");
-    }
-
-    // /link (STUB)
-    if (interaction.commandName === "link") {
-      return interaction.reply({
-        content: "🔒 iRacing account linking is coming soon.",
-        ephemeral: true
-      });
-    }
-
-  } catch (error) {
-    console.error("❌ Interaction error:", error);
-
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply("❌ An unexpected error occurred.");
-    } else {
-      await interaction.reply({
-        content: "❌ An unexpected error occurred.",
-        ephemeral: true
-      });
-    }
+    return interaction.reply({
+      content: `🔗 Click here to link your iRacing account:\n${loginUrl}`,
+      ephemeral: true
+    });
   }
 });
 
 // ===============================
-// 📋 REGISTER SLASH COMMANDS
+// REGISTER SLASH COMMANDS
 // ===============================
+
 const commands = [
   {
     name: "ping",
     description: "Test if the bot is responding"
-  },
-  {
-    name: "leaderboard",
-    description: "Show the iRating leaderboard"
-  },
-  {
-    name: "setirating",
-    description: "Set a driver's iRating (admin only)",
-    options: [
-      {
-        name: "driver",
-        description: "Driver name",
-        type: 3,
-        required: true
-      },
-      {
-        name: "irating",
-        description: "New iRating value",
-        type: 4,
-        required: true
-      }
-    ]
-  },
-  {
-    name: "forcepost",
-    description: "Manually post the leaderboard (admin only)"
   },
   {
     name: "link",
@@ -244,15 +149,17 @@ const commands = [
   }
 ];
 
-const rest = new REST({ version: "10" }).setToken(TOKEN);
+const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
 (async () => {
   try {
     console.log("🔄 Registering slash commands...");
+
     await rest.put(
       Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
       { body: commands }
     );
+
     console.log("✅ Slash commands registered.");
   } catch (error) {
     console.error("❌ Error registering commands:", error);
@@ -260,6 +167,7 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 })();
 
 // ===============================
-// 🚀 START BOT
+// START BOT
 // ===============================
-client.login(TOKEN);
+
+client.login(DISCORD_TOKEN);
