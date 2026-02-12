@@ -4,8 +4,7 @@ const {
   Client,
   GatewayIntentBits,
   REST,
-  Routes,
-  EmbedBuilder
+  Routes
 } = require("discord.js");
 
 const express = require("express");
@@ -19,14 +18,20 @@ const {
   DISCORD_TOKEN,
   CLIENT_ID,
   GUILD_ID,
-  ANNOUNCE_CHANNEL_ID,
   IRACING_CLIENT_ID,
   IRACING_CLIENT_SECRET,
   IRACING_REDIRECT_URI
 } = process.env;
 
-if (!DISCORD_TOKEN) {
-  console.error("❌ DISCORD_TOKEN missing.");
+if (
+  !DISCORD_TOKEN ||
+  !CLIENT_ID ||
+  !GUILD_ID ||
+  !IRACING_CLIENT_ID ||
+  !IRACING_CLIENT_SECRET ||
+  !IRACING_REDIRECT_URI
+) {
+  console.error("❌ Missing required environment variables.");
   process.exit(1);
 }
 
@@ -43,14 +48,19 @@ const client = new Client({
 // ===============================
 
 const app = express();
-app.use(express.json());
-
 const PORT = process.env.PORT || 3000;
 
-// Login route (redirects to iRacing)
+// iRacing OAuth endpoints
+const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
+const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
+
+// --------------------------------
+// LOGIN ROUTE
+// --------------------------------
+
 app.get("/oauth/login", (req, res) => {
   const authUrl =
-    "https://oauth.iracing.com/oauth2/authorize?" +
+    `${AUTHORIZE_URL}?` +
     `response_type=code` +
     `&client_id=${IRACING_CLIENT_ID}` +
     `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
@@ -60,7 +70,10 @@ app.get("/oauth/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// Callback route
+// --------------------------------
+// CALLBACK ROUTE
+// --------------------------------
+
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
 
@@ -69,26 +82,27 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    const tokenResponse = await fetch(
-      "https://oauth.iracing.com/oauth2/token",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: new URLSearchParams({
-          grant_type: "authorization_code",
-          code: code,
-          redirect_uri: IRACING_REDIRECT_URI,
-          client_id: IRACING_CLIENT_ID,
-          client_secret: IRACING_CLIENT_SECRET
-        })
-      }
-    );
+    const tokenResponse = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: IRACING_REDIRECT_URI,
+        client_id: IRACING_CLIENT_ID,
+        client_secret: IRACING_CLIENT_SECRET
+      })
+    });
 
     const tokenData = await tokenResponse.json();
 
     console.log("✅ OAuth Success:", tokenData);
+
+    if (tokenData.error) {
+      return res.status(500).send(`OAuth Error: ${tokenData.error}`);
+    }
 
     res.send("✅ iRacing account successfully linked! You may close this window.");
   } catch (err) {
@@ -97,13 +111,21 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
+// --------------------------------
+// ROOT ROUTE (so you don't see Cannot GET /)
+// --------------------------------
+
+app.get("/", (req, res) => {
+  res.send("🏁 GSR Bot OAuth Server is running.");
+});
+
 // Start Express
 app.listen(PORT, () => {
   console.log(`🌐 OAuth server running on port ${PORT}`);
 });
 
 // ===============================
-// BOT READY
+// DISCORD READY
 // ===============================
 
 client.once("ready", () => {
@@ -122,10 +144,8 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "link") {
-    const loginUrl = `${IRACING_REDIRECT_URI.replace(
-      "/oauth/callback",
-      ""
-    )}/oauth/login`;
+    const baseUrl = IRACING_REDIRECT_URI.replace("/oauth/callback", "");
+    const loginUrl = `${baseUrl}/oauth/login`;
 
     return interaction.reply({
       content: `🔗 Click here to link your iRacing account:\n${loginUrl}`,
