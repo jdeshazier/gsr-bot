@@ -54,33 +54,22 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-// Temporary in-memory storage for PKCE
+// Temporary in-memory store (fine for now)
 let pkceStore = {};
 
-// -------------------------------
-// PKCE FUNCTIONS
-// -------------------------------
-
-function generateCodeVerifier() {
-  return crypto.randomBytes(32).toString("base64url");
-}
-
-function generateCodeChallenge(verifier) {
-  return crypto
-    .createHash("sha256")
-    .update(verifier)
-    .digest("base64url");
-}
-
-// -------------------------------
+// --------------------------------
 // LOGIN ROUTE
-// -------------------------------
+// --------------------------------
 
 app.get("/oauth/login", (req, res) => {
-  const codeVerifier = generateCodeVerifier();
-  const codeChallenge = generateCodeChallenge(codeVerifier);
+  const codeVerifier = crypto.randomBytes(32).toString("hex");
 
-  pkceStore["default"] = codeVerifier;
+  const codeChallenge = crypto
+    .createHash("sha256")
+    .update(codeVerifier)
+    .digest("base64url");
+
+  pkceStore.verifier = codeVerifier;
 
   const authUrl =
     `${AUTHORIZE_URL}?` +
@@ -95,9 +84,9 @@ app.get("/oauth/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// -------------------------------
+// --------------------------------
 // CALLBACK ROUTE
-// -------------------------------
+// --------------------------------
 
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
@@ -105,8 +94,6 @@ app.get("/oauth/callback", async (req, res) => {
   if (!code) {
     return res.status(400).send("Missing authorization code.");
   }
-
-  const codeVerifier = pkceStore["default"];
 
   try {
     const tokenResponse = await fetch(TOKEN_URL, {
@@ -120,13 +107,13 @@ app.get("/oauth/callback", async (req, res) => {
         redirect_uri: IRACING_REDIRECT_URI,
         client_id: IRACING_CLIENT_ID,
         client_secret: IRACING_CLIENT_SECRET,
-        code_verifier: codeVerifier
+        code_verifier: pkceStore.verifier
       })
     });
 
     const tokenData = await tokenResponse.json();
 
-    console.log("✅ OAuth Success:", tokenData);
+    console.log("TOKEN RESPONSE:", tokenData);
 
     if (tokenData.error) {
       return res.status(500).send(`OAuth Error: ${tokenData.error}`);
@@ -134,7 +121,7 @@ app.get("/oauth/callback", async (req, res) => {
 
     res.send("✅ iRacing account successfully linked! You may close this window.");
   } catch (err) {
-    console.error("❌ OAuth Error:", err);
+    console.error("OAuth Error:", err);
     res.status(500).send("OAuth failed.");
   }
 });
@@ -169,8 +156,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "link") {
     return interaction.reply({
-      content:
-        "🔗 Click here to link your iRacing account:\nhttps://www.gsracing.app/oauth/login",
+      content: "🔗 Click here to link your iRacing account:\nhttps://gsracing.app/oauth/login",
       ephemeral: true
     });
   }
@@ -185,16 +171,13 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
 (async () => {
   try {
-    console.log("🔄 Registering slash commands...");
-
     await rest.put(
       Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
       { body: commands }
     );
-
     console.log("✅ Slash commands registered.");
   } catch (error) {
-    console.error("❌ Error registering commands:", error);
+    console.error(error);
   }
 })();
 
