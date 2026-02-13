@@ -156,7 +156,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "link") {
     return interaction.reply({
-      content: "🔗 Click here to link your iRacing account:\nhttps://gsracing.app/oauth/login",
+      content: "🔗 Click here to link your iRacing account:\nhttps://www.gsracing.app/oauth/login",
       ephemeral: true
     });
   }
