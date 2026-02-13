@@ -9,6 +9,7 @@ const {
 
 const express = require("express");
 const fetch = require("node-fetch");
+const crypto = require("crypto");
 
 // ===============================
 // ENV VARIABLES
@@ -44,35 +45,59 @@ const client = new Client({
 });
 
 // ===============================
-// EXPRESS SERVER (OAUTH)
+// EXPRESS SERVER
 // ===============================
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// iRacing OAuth endpoints
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-// --------------------------------
+// Temporary in-memory storage for PKCE
+let pkceStore = {};
+
+// -------------------------------
+// PKCE FUNCTIONS
+// -------------------------------
+
+function generateCodeVerifier() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+function generateCodeChallenge(verifier) {
+  return crypto
+    .createHash("sha256")
+    .update(verifier)
+    .digest("base64url");
+}
+
+// -------------------------------
 // LOGIN ROUTE
-// --------------------------------
+// -------------------------------
 
 app.get("/oauth/login", (req, res) => {
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
+
+  pkceStore["default"] = codeVerifier;
+
   const authUrl =
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
     `&client_id=${IRACING_CLIENT_ID}` +
     `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
     `&scope=openid` +
-    `&audience=data-server`;
+    `&audience=data-server` +
+    `&code_challenge=${codeChallenge}` +
+    `&code_challenge_method=S256`;
 
   res.redirect(authUrl);
 });
 
-// --------------------------------
+// -------------------------------
 // CALLBACK ROUTE
-// --------------------------------
+// -------------------------------
 
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
@@ -80,6 +105,8 @@ app.get("/oauth/callback", async (req, res) => {
   if (!code) {
     return res.status(400).send("Missing authorization code.");
   }
+
+  const codeVerifier = pkceStore["default"];
 
   try {
     const tokenResponse = await fetch(TOKEN_URL, {
@@ -92,7 +119,8 @@ app.get("/oauth/callback", async (req, res) => {
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
         client_id: IRACING_CLIENT_ID,
-        client_secret: IRACING_CLIENT_SECRET
+        client_secret: IRACING_CLIENT_SECRET,
+        code_verifier: codeVerifier
       })
     });
 
@@ -111,15 +139,11 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
-// --------------------------------
-// ROOT ROUTE (so you don't see Cannot GET /)
-// --------------------------------
-
+// Root route
 app.get("/", (req, res) => {
   res.send("🏁 GSR Bot OAuth Server is running.");
 });
 
-// Start Express
 app.listen(PORT, () => {
   console.log(`🌐 OAuth server running on port ${PORT}`);
 });
@@ -133,7 +157,7 @@ client.once("ready", () => {
 });
 
 // ===============================
-// SLASH COMMAND HANDLER
+// SLASH COMMANDS
 // ===============================
 
 client.on("interactionCreate", async (interaction) => {
@@ -144,29 +168,17 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "link") {
-    const baseUrl = IRACING_REDIRECT_URI.replace("/oauth/callback", "");
-    const loginUrl = `${baseUrl}/oauth/login`;
-
     return interaction.reply({
-      content: `🔗 Click here to link your iRacing account:\n${loginUrl}`,
+      content:
+        "🔗 Click here to link your iRacing account:\nhttps://www.gsracing.app/oauth/login",
       ephemeral: true
     });
   }
 });
 
-// ===============================
-// REGISTER SLASH COMMANDS
-// ===============================
-
 const commands = [
-  {
-    name: "ping",
-    description: "Test if the bot is responding"
-  },
-  {
-    name: "link",
-    description: "Link your iRacing account"
-  }
+  { name: "ping", description: "Test if the bot is responding" },
+  { name: "link", description: "Link your iRacing account" }
 ];
 
 const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
@@ -185,9 +197,5 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
     console.error("❌ Error registering commands:", error);
   }
 })();
-
-// ===============================
-// START BOT
-// ===============================
 
 client.login(DISCORD_TOKEN);
