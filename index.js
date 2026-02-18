@@ -24,11 +24,6 @@ const {
   IRACING_REDIRECT_URI
 } = process.env;
 
-const IRACING_CLIENT_ID="gsrbot";
-const IRACING_CLIENT_SECRET="grandpa-rectangle-Exhale-DECEIVING-handcart-Suction";
-const IRACING_REDIRECT_URI="https://www.gsracing.app/oauth/callback";
-
-
 if (
   !DISCORD_TOKEN ||
   !CLIENT_ID ||
