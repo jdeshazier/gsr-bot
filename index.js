@@ -94,6 +94,13 @@ app.get("/oauth/login", (req, res) => {
 // CALLBACK ROUTE
 // --------------------------------
 
+function mask(secret, id) {
+  const hasher = crypto.createHash("sha256");
+  const normalizedId = id.trim().toLowerCase();
+  hasher.update(`${secret}${normalizedId}`);
+  return hasher.digest("base64");
+}
+
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
 
@@ -102,26 +109,26 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    // Normalize client_id
-    const normalizedId = IRACING_CLIENT_ID.trim().toLowerCase();
+    // Mask the secret per iRacing requirements
+    const maskedSecret = mask(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
 
-    // Mask secret per iRacing docs
-    const hasher = crypto.createHash("sha256");
-    hasher.update(`${IRACING_CLIENT_SECRET}${normalizedId}`);
-    const maskedSecret = hasher.digest("base64");
+    // Build Basic Auth header
+    const basicAuth = Buffer.from(
+      `${IRACING_CLIENT_ID}:${maskedSecret}`
+    ).toString("base64");
 
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": `Basic ${basicAuth}`
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
-        client_id: IRACING_CLIENT_ID,
-        password: maskedSecret,
-        code_verifier: pkceStore.verifier
+        code_verifier: pkceStore.verifier,
+        client_id: IRACING_CLIENT_ID   // Required by iRacing even with Basic auth
       })
     });
 
