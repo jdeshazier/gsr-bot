@@ -24,6 +24,11 @@ const {
   IRACING_REDIRECT_URI
 } = process.env;
 
+IRACING_CLIENT_ID=gsrbot;
+IRACING_CLIENT_SECRET=grandpa-rectangle-Exhale-DECEIVING-handcart-Suction;
+IRACING_REDIRECT_URI=https://www.gsracing.app/oauth/callback;
+
+
 if (
   !DISCORD_TOKEN ||
   !CLIENT_ID ||
