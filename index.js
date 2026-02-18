@@ -48,7 +48,7 @@ const client = new Client({
 // EXPRESS SERVER
 // ===============================
 
-const app = express();f
+const app = express();
 const PORT = process.env.PORT || 3000;
 
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
