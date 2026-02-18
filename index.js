@@ -103,7 +103,7 @@ app.get("/oauth/callback", async (req, res) => {
 
   try {
     // ================================
-    // MASK CLIENT SECRET (IRACING RULE)
+    // MASK CLIENT SECRET
     // ================================
 
     const normalizedId = IRACING_CLIENT_ID.trim().toLowerCase();
@@ -129,6 +129,7 @@ app.get("/oauth/callback", async (req, res) => {
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
+        client_id: IRACING_CLIENT_ID, // <-- ADD THIS
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
         code_verifier: pkceStore.verifier
