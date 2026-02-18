@@ -48,7 +48,7 @@ const client = new Client({
 // EXPRESS SERVER
 // ===============================
 
-const app = express();
+const app = express();f
 const PORT = process.env.PORT || 3000;
 
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
@@ -102,9 +102,23 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    // Basic Auth header (required by iRacing)
+    // ================================
+    // MASK CLIENT SECRET (IRACING RULE)
+    // ================================
+
+    const normalizedId = IRACING_CLIENT_ID.trim().toLowerCase();
+
+    const hasher = crypto.createHash("sha256");
+    hasher.update(`${IRACING_CLIENT_SECRET}${normalizedId}`);
+
+    const maskedSecret = hasher.digest("base64");
+
+    // ================================
+    // BUILD BASIC AUTH HEADER
+    // ================================
+
     const basicAuth = Buffer.from(
-      `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
+      `${IRACING_CLIENT_ID}:${maskedSecret}`
     ).toString("base64");
 
     const tokenResponse = await fetch(TOKEN_URL, {
@@ -115,7 +129,6 @@ app.get("/oauth/callback", async (req, res) => {
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
-        client_id: IRACING_CLIENT_ID, // 🔥 REQUIRED
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
         code_verifier: pkceStore.verifier
