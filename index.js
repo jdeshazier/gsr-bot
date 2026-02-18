@@ -64,10 +64,16 @@ let pkceStore = {};
 app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
 
-  const codeChallenge = crypto
+  const hash = crypto
     .createHash("sha256")
     .update(codeVerifier)
-    .digest("base64url");
+    .digest("base64");
+
+  // Convert to base64url manually
+  const codeChallenge = hash
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 
   pkceStore.verifier = codeVerifier;
 
