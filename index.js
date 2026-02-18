@@ -54,7 +54,7 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-// Temporary in-memory store (fine for now)
+// Temporary PKCE storage
 let pkceStore = {};
 
 // --------------------------------
@@ -96,7 +96,7 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    // Build Basic Auth header
+    // Basic Auth header (required by iRacing)
     const basicAuth = Buffer.from(
       `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
     ).toString("base64");
@@ -109,6 +109,7 @@ app.get("/oauth/callback", async (req, res) => {
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
+        client_id: IRACING_CLIENT_ID, // 🔥 REQUIRED
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
         code_verifier: pkceStore.verifier
@@ -160,7 +161,8 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "link") {
     return interaction.reply({
-      content: "🔗 Click here to link your iRacing account:\nhttps://www.gsracing.app/oauth/login",
+      content:
+        "🔗 Click here to link your iRacing account:\nhttps://www.gsracing.app/oauth/login",
       ephemeral: true
     });
   }
