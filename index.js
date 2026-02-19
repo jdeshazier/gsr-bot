@@ -9,6 +9,7 @@ const {
 
 const express = require("express");
 const fetch = require("node-fetch");
+const crypto = require("crypto");
 
 // ===============================
 // ENV VARIABLES
@@ -35,10 +36,6 @@ if (
   process.exit(1);
 }
 
-console.log("IRACING_CLIENT_ID:", IRACING_CLIENT_ID);
-console.log("SECRET LENGTH:", IRACING_CLIENT_SECRET?.length);
-console.log("REDIRECT:", IRACING_REDIRECT_URI);
-
 // ===============================
 // DISCORD CLIENT
 // ===============================
@@ -57,18 +54,38 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
+// Temporary PKCE storage
+let pkceStore = {};
+
 // --------------------------------
-// LOGIN ROUTE (NO PKCE)
+// LOGIN ROUTE
 // --------------------------------
 
 app.get("/oauth/login", (req, res) => {
+  const codeVerifier = crypto.randomBytes(32).toString("hex");
+
+  const hash = crypto
+    .createHash("sha256")
+    .update(codeVerifier)
+    .digest("base64");
+
+  // Convert to base64url manually
+  const codeChallenge = hash
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  pkceStore.verifier = codeVerifier;
+
   const authUrl =
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
     `&client_id=${IRACING_CLIENT_ID}` +
     `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
     `&scope=openid` +
-    `&audience=data-server`;
+    `&audience=data-server` +
+    `&code_challenge=${codeChallenge}` +
+    `&code_challenge_method=S256`;
 
   res.redirect(authUrl);
 });
@@ -76,6 +93,13 @@ app.get("/oauth/login", (req, res) => {
 // --------------------------------
 // CALLBACK ROUTE
 // --------------------------------
+
+function mask(secret, id) {
+  const hasher = crypto.createHash("sha256");
+  const normalizedId = id.trim().toLowerCase();
+  hasher.update(`${secret}${normalizedId}`);
+  return hasher.digest("base64");
+}
 
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
@@ -85,8 +109,12 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
+    // Mask the secret per iRacing requirements
+    const maskedSecret = mask(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
+
+    // Build Basic Auth header
     const basicAuth = Buffer.from(
-      `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
+      `${IRACING_CLIENT_ID}:${maskedSecret}`
     ).toString("base64");
 
     const tokenResponse = await fetch(TOKEN_URL, {
@@ -98,19 +126,18 @@ app.get("/oauth/callback", async (req, res) => {
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: code,
-        redirect_uri: IRACING_REDIRECT_URI
+        redirect_uri: IRACING_REDIRECT_URI,
+        code_verifier: pkceStore.verifier,
+        client_id: IRACING_CLIENT_ID   // Required by iRacing even with Basic auth
       })
     });
 
-    const rawText = await tokenResponse.text();
+    const tokenData = await tokenResponse.json();
 
-    console.log("TOKEN STATUS:", tokenResponse.status);
-    console.log("TOKEN RESPONSE:", rawText);
+    console.log("TOKEN RESPONSE:", tokenData);
 
-    if (!tokenResponse.ok) {
-      return res
-        .status(500)
-        .send(`OAuth Error (${tokenResponse.status}) — Check Railway logs.`);
+    if (tokenData.error) {
+      return res.status(500).send(`OAuth Error: ${tokenData.error}`);
     }
 
     res.send("✅ iRacing account successfully linked!");
@@ -130,12 +157,16 @@ app.listen(PORT, () => {
 });
 
 // ===============================
-// DISCORD
+// DISCORD READY
 // ===============================
 
 client.once("ready", () => {
   console.log("✅ Bot is logged into Discord!");
 });
+
+// ===============================
+// SLASH COMMANDS
+// ===============================
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
