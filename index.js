@@ -36,7 +36,6 @@ if (
   process.exit(1);
 }
 
-// 🔎 DEBUG LOGS (TEMPORARY)
 console.log("==== ENV CHECK ====");
 console.log("IRACING_CLIENT_ID:", IRACING_CLIENT_ID);
 console.log("IRACING_SECRET_LENGTH:", IRACING_CLIENT_SECRET?.length);
@@ -61,7 +60,6 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-// Temporary PKCE storage
 let pkceStore = {};
 
 // --------------------------------
@@ -110,8 +108,6 @@ app.get("/oauth/callback", async (req, res) => {
   try {
     const credentials = `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`;
     const basicAuth = Buffer.from(credentials).toString("base64");
-
-    console.log("🔐 AUTH HEADER (base64 preview):", basicAuth.slice(0, 20) + "...");
 
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
@@ -177,7 +173,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "link") {
     return interaction.reply({
       content:
-        "🔗 Click here to link your iRacing account:\nhttps://gsracing.app/oauth/login",
+        "🔗 Click here to link your iRacing account:\nhttps://www.gsracing.app/oauth/login",
       ephemeral: true
     });
   }
