@@ -110,17 +110,16 @@ app.get("/oauth/callback", async (req, res) => {
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
       headers: {
-  "Content-Type": "application/x-www-form-urlencoded"
-},
-body: new URLSearchParams({
-  grant_type: "authorization_code",
-  code: code,
-  redirect_uri: IRACING_REDIRECT_URI,
-  code_verifier: pkceStore.verifier,
-  client_id: IRACING_CLIENT_ID,
-  client_secret: IRACING_CLIENT_SECRET
-})
-
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": `Basic ${basicAuth}`
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: IRACING_REDIRECT_URI,
+        code_verifier: pkceStore.verifier,
+        client_id: IRACING_CLIENT_ID
+      })
     });
 
     const tokenData = await tokenResponse.json();
