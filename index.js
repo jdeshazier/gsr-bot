@@ -101,7 +101,6 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    // ✅ Proper Basic Auth (Confidential Client)
     const basicAuth = Buffer.from(
       `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
     ).toString("base64");
@@ -114,6 +113,7 @@ app.get("/oauth/callback", async (req, res) => {
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
+        client_id: IRACING_CLIENT_ID, // REQUIRED by iRacing
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
         code_verifier: pkceStore.verifier
