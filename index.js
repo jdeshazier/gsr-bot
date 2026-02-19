@@ -94,13 +94,6 @@ app.get("/oauth/login", (req, res) => {
 // CALLBACK ROUTE
 // --------------------------------
 
-function mask(secret, id) {
-  const hasher = crypto.createHash("sha256");
-  const normalizedId = id.trim().toLowerCase();
-  hasher.update(`${secret}${normalizedId}`);
-  return hasher.digest("base64");
-}
-
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
 
@@ -109,12 +102,9 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    // Mask the secret per iRacing requirements
-    const maskedSecret = mask(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
-
-    // Build Basic Auth header
+    // Build Basic Auth header using RAW secret
     const basicAuth = Buffer.from(
-      `${IRACING_CLIENT_ID}:${maskedSecret}`
+      `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
     ).toString("base64");
 
     const tokenResponse = await fetch(TOKEN_URL, {
@@ -128,7 +118,7 @@ app.get("/oauth/callback", async (req, res) => {
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
         code_verifier: pkceStore.verifier,
-        client_id: IRACING_CLIENT_ID   // Required by iRacing even with Basic auth
+        client_id: IRACING_CLIENT_ID
       })
     });
 
@@ -146,6 +136,7 @@ app.get("/oauth/callback", async (req, res) => {
     res.status(500).send("OAuth failed.");
   }
 });
+
 
 // Root route
 app.get("/", (req, res) => {
