@@ -9,7 +9,6 @@ const {
 
 const express = require("express");
 const fetch = require("node-fetch");
-const crypto = require("crypto");
 
 // ===============================
 // ENV VARIABLES
@@ -36,11 +35,9 @@ if (
   process.exit(1);
 }
 
-console.log("==== ENV CHECK ====");
 console.log("IRACING_CLIENT_ID:", IRACING_CLIENT_ID);
-console.log("IRACING_SECRET_LENGTH:", IRACING_CLIENT_SECRET?.length);
-console.log("IRACING_REDIRECT_URI:", IRACING_REDIRECT_URI);
-console.log("===================");
+console.log("SECRET LENGTH:", IRACING_CLIENT_SECRET?.length);
+console.log("REDIRECT:", IRACING_REDIRECT_URI);
 
 // ===============================
 // DISCORD CLIENT
@@ -60,36 +57,18 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-let pkceStore = {};
-
 // --------------------------------
-// LOGIN ROUTE
+// LOGIN ROUTE (NO PKCE)
 // --------------------------------
 
 app.get("/oauth/login", (req, res) => {
-  const codeVerifier = crypto.randomBytes(32).toString("hex");
-
-  const hash = crypto
-    .createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64");
-
-  const codeChallenge = hash
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-  pkceStore.verifier = codeVerifier;
-
   const authUrl =
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
     `&client_id=${IRACING_CLIENT_ID}` +
     `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
     `&scope=openid` +
-    `&audience=data-server` +
-    `&code_challenge=${codeChallenge}` +
-    `&code_challenge_method=S256`;
+    `&audience=data-server`;
 
   res.redirect(authUrl);
 });
@@ -106,8 +85,9 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    const credentials = `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`;
-    const basicAuth = Buffer.from(credentials).toString("base64");
+    const basicAuth = Buffer.from(
+      `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
+    ).toString("base64");
 
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
@@ -117,17 +97,15 @@ app.get("/oauth/callback", async (req, res) => {
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
-        client_id: IRACING_CLIENT_ID,
         code: code,
-        redirect_uri: IRACING_REDIRECT_URI,
-        code_verifier: pkceStore.verifier
+        redirect_uri: IRACING_REDIRECT_URI
       })
     });
 
     const rawText = await tokenResponse.text();
 
-    console.log("🔎 TOKEN STATUS:", tokenResponse.status);
-    console.log("🔎 TOKEN RESPONSE:", rawText);
+    console.log("TOKEN STATUS:", tokenResponse.status);
+    console.log("TOKEN RESPONSE:", rawText);
 
     if (!tokenResponse.ok) {
       return res
@@ -152,16 +130,12 @@ app.listen(PORT, () => {
 });
 
 // ===============================
-// DISCORD READY
+// DISCORD
 // ===============================
 
 client.once("ready", () => {
   console.log("✅ Bot is logged into Discord!");
 });
-
-// ===============================
-// SLASH COMMANDS
-// ===============================
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
