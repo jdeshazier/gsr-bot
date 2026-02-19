@@ -54,7 +54,7 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-// Temporary PKCE storage
+// Temporary PKCE storage (dev only)
 let pkceStore = {};
 
 // --------------------------------
@@ -69,7 +69,6 @@ app.get("/oauth/login", (req, res) => {
     .update(codeVerifier)
     .digest("base64");
 
-  // Convert to base64url manually
   const codeChallenge = hash
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -94,13 +93,6 @@ app.get("/oauth/login", (req, res) => {
 // CALLBACK ROUTE
 // --------------------------------
 
-function mask(secret, id) {
-  const hasher = crypto.createHash("sha256");
-  const normalizedId = id.trim().toLowerCase();
-  hasher.update(`${secret}${normalizedId}`);
-  return hasher.digest("base64");
-}
-
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
 
@@ -109,12 +101,9 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    // Mask the secret per iRacing requirements
-    const maskedSecret = mask(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
-
-    // Build Basic Auth header
+    // ✅ Proper Basic Auth (Confidential Client)
     const basicAuth = Buffer.from(
-      `${IRACING_CLIENT_ID}:${maskedSecret}`
+      `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
     ).toString("base64");
 
     const tokenResponse = await fetch(TOKEN_URL, {
@@ -127,18 +116,22 @@ app.get("/oauth/callback", async (req, res) => {
         grant_type: "authorization_code",
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
-        code_verifier: pkceStore.verifier,
-        client_id: IRACING_CLIENT_ID   // Required by iRacing even with Basic auth
+        code_verifier: pkceStore.verifier
       })
     });
 
-    const tokenData = await tokenResponse.json();
+    const rawText = await tokenResponse.text();
 
-    console.log("TOKEN RESPONSE:", tokenData);
+    console.log("🔎 TOKEN STATUS:", tokenResponse.status);
+    console.log("🔎 TOKEN RAW RESPONSE:", rawText);
 
-    if (tokenData.error) {
-      return res.status(500).send(`OAuth Error: ${tokenData.error}`);
+    if (!tokenResponse.ok) {
+      return res
+        .status(500)
+        .send(`OAuth Error (${tokenResponse.status}) — Check server logs.`);
     }
+
+    const tokenData = JSON.parse(rawText);
 
     res.send("✅ iRacing account successfully linked!");
   } catch (err) {
