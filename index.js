@@ -36,6 +36,13 @@ if (
   process.exit(1);
 }
 
+// 🔎 DEBUG LOGS (TEMPORARY)
+console.log("==== ENV CHECK ====");
+console.log("IRACING_CLIENT_ID:", IRACING_CLIENT_ID);
+console.log("IRACING_SECRET_LENGTH:", IRACING_CLIENT_SECRET?.length);
+console.log("IRACING_REDIRECT_URI:", IRACING_REDIRECT_URI);
+console.log("===================");
+
 // ===============================
 // DISCORD CLIENT
 // ===============================
@@ -54,7 +61,7 @@ const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-// Temporary PKCE storage (dev only)
+// Temporary PKCE storage
 let pkceStore = {};
 
 // --------------------------------
@@ -101,9 +108,10 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    const basicAuth = Buffer.from(
-      `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
-    ).toString("base64");
+    const credentials = `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`;
+    const basicAuth = Buffer.from(credentials).toString("base64");
+
+    console.log("🔐 AUTH HEADER (base64 preview):", basicAuth.slice(0, 20) + "...");
 
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
@@ -113,7 +121,7 @@ app.get("/oauth/callback", async (req, res) => {
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
-        client_id: IRACING_CLIENT_ID, // REQUIRED by iRacing
+        client_id: IRACING_CLIENT_ID,
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
         code_verifier: pkceStore.verifier
@@ -123,15 +131,13 @@ app.get("/oauth/callback", async (req, res) => {
     const rawText = await tokenResponse.text();
 
     console.log("🔎 TOKEN STATUS:", tokenResponse.status);
-    console.log("🔎 TOKEN RAW RESPONSE:", rawText);
+    console.log("🔎 TOKEN RESPONSE:", rawText);
 
     if (!tokenResponse.ok) {
       return res
         .status(500)
-        .send(`OAuth Error (${tokenResponse.status}) — Check server logs.`);
+        .send(`OAuth Error (${tokenResponse.status}) — Check Railway logs.`);
     }
-
-    const tokenData = JSON.parse(rawText);
 
     res.send("✅ iRacing account successfully linked!");
   } catch (err) {
@@ -171,7 +177,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.commandName === "link") {
     return interaction.reply({
       content:
-        "🔗 Click here to link your iRacing account:\nhttps://www.gsracing.app/oauth/login",
+        "🔗 Click here to link your iRacing account:\nhttps://gsracing.app/oauth/login",
       ephemeral: true
     });
   }
