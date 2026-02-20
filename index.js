@@ -104,23 +104,17 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
-    // Build Basic Auth header using RAW secret
-    const basicAuth = Buffer.from(
-      `${IRACING_CLIENT_ID}:${IRACING_CLIENT_SECRET}`
-    ).toString("base64");
-
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": `Basic ${basicAuth}`
+        "Content-Type": "application/x-www-form-urlencoded"
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
+        client_id: IRACING_CLIENT_ID,
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
-        code_verifier: pkceStore.verifier,
-        client_id: IRACING_CLIENT_ID
+        code_verifier: pkceStore.verifier
       })
     });
 
@@ -138,7 +132,6 @@ app.get("/oauth/callback", async (req, res) => {
     res.status(500).send("OAuth failed.");
   }
 });
-
 
 // Root route
 app.get("/", (req, res) => {
