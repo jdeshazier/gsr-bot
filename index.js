@@ -88,6 +88,8 @@ app.get("/oauth/login", (req, res) => {
     `&code_challenge_method=S256`;
 
   res.redirect(authUrl);
+    console.log(authUrl);
+
 });
 
 // --------------------------------
