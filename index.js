@@ -83,7 +83,6 @@ app.get("/oauth/login", (req, res) => {
     `&client_id=${IRACING_CLIENT_ID}` +
     `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
     `&scope=iracing.auth` +
-    `&audience=data-server` +
     `&code_challenge=${codeChallenge}` +
     `&code_challenge_method=S256`;
 
