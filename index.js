@@ -69,6 +69,7 @@ app.get("/oauth/login", (req, res) => {
     .update(codeVerifier)
     .digest("base64");
 
+  // Convert to base64url manually
   const codeChallenge = hash
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -80,14 +81,13 @@ app.get("/oauth/login", (req, res) => {
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
     `&client_id=${IRACING_CLIENT_ID}` +
-    `&redirect_uri=${IRACING_REDIRECT_URI}` +  // ❗ DO NOT encode manually
-    `&scope=iracing.auth` +                   // ✅ correct scope
+    `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
+    `&scope=iracing.auth` +
+    `&audience=data-server` +
     `&code_challenge=${codeChallenge}` +
     `&code_challenge_method=S256`;
 
   res.redirect(authUrl);
-   console.log(authUrl);
-
 });
 
 // --------------------------------
