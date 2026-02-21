@@ -220,38 +220,47 @@ app.get("/oauth/callback", async (req, res) => {
     // Get Discord ID
     const discordId = req.query.state || "unknown";
 
-    // Fetch chart_data to get name
+    // Fetch chart_data to get name (Road/Sports Car category)
     const chartUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
     const chartRes = await fetch(chartUrl, {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
+
     let iracingName = "Unknown";
     if (chartRes.ok) {
       const chartJson = await chartRes.json();
-      if (chartJson.name) {
+      console.log("[LINK] Full chart_data response during linking:", JSON.stringify(chartJson, null, 2));
+
+      // Try to get name from root response
+      if (chartJson.name && typeof chartJson.name === 'string' && chartJson.name.trim() !== '') {
         const nameParts = chartJson.name.trim().split(/\s+/);
         if (nameParts.length >= 2) {
           const first = nameParts[0];
           const lastInitial = nameParts[nameParts.length - 1][0].toUpperCase();
           iracingName = `${first} ${lastInitial}.`;
         } else {
-          iracingName = chartJson.name;
+          iracingName = chartJson.name.trim();
         }
+      } else {
+        console.warn("[LINK] No 'name' field in chart_data response during linking");
       }
+    } else {
+      console.error("[LINK] chart_data fetch failed during linking:", chartRes.status);
     }
 
+    // Save with name
     let drivers = loadLinkedDrivers();
     drivers = drivers.filter(d => d.discordId !== discordId);
     drivers.push({
       discordId,
-      iracingName,  // Saved as "First L."
+      iracingName,  // "First L." or "Unknown"
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt: Date.now() + tokenData.expires_in * 1000
     });
     saveLinkedDrivers(drivers);
 
-    res.send(`✅ iRacing account linked!<br><br>As: **${iracingName}**<br>You can now close this window.`);
+    res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
   } catch (err) {
     console.error("Callback error:", err);
     res.status(500).send("Linking failed. Check logs.");
