@@ -22,6 +22,7 @@ const {
   IRACING_CLIENT_SECRET,
   IRACING_REDIRECT_URI
 } = process.env;
+
 if (
   !DISCORD_TOKEN ||
   !CLIENT_ID ||
@@ -62,6 +63,19 @@ function saveLinkedDrivers(drivers) {
   }
 }
 
+// ===============================
+// iRacing client secret masking (REQUIRED by iRacing)
+// ===============================
+function maskSecret(secret, clientId) {
+  if (!secret || !clientId) {
+    throw new Error("Missing client secret or client ID for masking");
+  }
+  const normalizedId = clientId.trim().toLowerCase();
+  const input = secret + normalizedId;
+  const hash = crypto.createHash("sha256").update(input, "utf8").digest();
+  return hash.toString("base64"); // Standard base64 with padding
+}
+
 // Helper: Get a valid (fresh) access token for a user (refreshes if needed)
 async function getValidAccessToken(user) {
   // If still valid (with 1 min buffer), return it
@@ -92,12 +106,11 @@ async function getValidAccessToken(user) {
 
   const data = await res.json();
 
-  // Update user's tokens
   user.accessToken = data.access_token;
   user.refreshToken = data.refresh_token || user.refreshToken;
   user.expiresAt = Date.now() + data.expires_in * 1000;
 
-  // Save updated user back to file
+  // Save updated tokens
   let drivers = loadLinkedDrivers();
   const index = drivers.findIndex(d => d.discordId === user.discordId);
   if (index !== -1) {
@@ -108,46 +121,47 @@ async function getValidAccessToken(user) {
   return user.accessToken;
 }
 
-// Helper: Fetch current Formula iRating (category_id=6)
+// Helper: Fetch current Formula iRating (category_id=6) - follows 'link' if present
 async function getCurrentIRating(user) {
   const token = await getValidAccessToken(user);
 
-  const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
+  const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
 
-  const res = await fetch(url, {
+  const rootRes = await fetch(rootUrl, {
     headers: { Authorization: `Bearer ${token}` }
   });
 
-  if (!res.ok) {
-    console.error(`Formula iRating fetch failed: ${res.status}`);
+  if (!rootRes.ok) {
+    console.error(`Root chart fetch failed: ${rootRes.status}`);
     return null;
   }
 
-  const data = await res.json();
+  const rootJson = await rootRes.json();
+  console.log("Root chart_data response:", JSON.stringify(rootJson, null, 2));
 
-  // Log the full response for debugging
-  console.log("Full Formula chart_data response:", JSON.stringify(data, null, 2));
-
-  if (data && data.data && Array.isArray(data.data) && data.data.length > 0) {
-    const latest = data.data[data.data.length - 1];
-    return latest.value;  // the iRating number
+  let chartUrl = rootUrl;
+  if (rootJson.link) {
+    chartUrl = rootJson.link;
+    console.log("Following chart link:", chartUrl);
   }
 
-  console.log("No Formula iRating data found in response");
+  const chartRes = await fetch(chartUrl);
+
+  if (!chartRes.ok) {
+    console.error(`Chart data fetch from link failed: ${chartRes.status}`);
+    return null;
+  }
+
+  const chartJson = await chartRes.json();
+  console.log("Full chart JSON from link/original:", JSON.stringify(chartJson, null, 2));
+
+  if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
+    const latest = chartJson.data[chartJson.data.length - 1];
+    return latest.value; // the iRating number
+  }
+
+  console.log("No 'data' array or empty in chart JSON");
   return null;
-}
-
-// ===============================
-// iRacing client secret masking (REQUIRED by iRacing)
-// ===============================
-function maskSecret(secret, clientId) {
-  if (!secret || !clientId) {
-    throw new Error("Missing client secret or client ID for masking");
-  }
-  const normalizedId = clientId.trim().toLowerCase();
-  const input = secret + normalizedId;
-  const hash = crypto.createHash("sha256").update(input, "utf8").digest();
-  return hash.toString("base64"); // Standard base64 with padding
 }
 
 // ===============================
@@ -164,24 +178,19 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
-// Temporary PKCE storage (in production you'd use session or DB per user)
+// Temporary PKCE storage
 let pkceStore = {};
 
 // --------------------------------
-// LOGIN ROUTE - Start OAuth flow
+// LOGIN ROUTE
 // --------------------------------
 app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
-  const hash = crypto
-    .createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64");
-  // Convert to base64url
-  const codeChallenge = hash
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
+  const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
   pkceStore.verifier = codeVerifier;
+
   const authUrl =
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
@@ -190,18 +199,20 @@ app.get("/oauth/login", (req, res) => {
     `&scope=iracing.auth` +
     `&code_challenge=${codeChallenge}` +
     `&code_challenge_method=S256`;
+
   console.log("Redirecting to:", authUrl);
   res.redirect(authUrl);
 });
 
 // --------------------------------
-// CALLBACK ROUTE - Exchange code for token + SAVE to persistent file
+// CALLBACK ROUTE
 // --------------------------------
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) {
     return res.status(400).send("Missing authorization code.");
   }
+
   try {
     const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
     const body = new URLSearchParams({
@@ -212,16 +223,17 @@ app.get("/oauth/callback", async (req, res) => {
       redirect_uri: IRACING_REDIRECT_URI,
       code_verifier: pkceStore.verifier
     });
+
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString()
     });
+
     const tokenData = await tokenResponse.json();
     console.log("TOKEN RESPONSE STATUS:", tokenResponse.status);
     console.log("TOKEN RESPONSE BODY:", JSON.stringify(tokenData, null, 2));
+
     if (!tokenResponse.ok || tokenData.error) {
       return res.status(tokenResponse.status || 400).send(
         `OAuth Error: ${tokenData.error || "Unknown error"}\n` +
@@ -230,14 +242,11 @@ app.get("/oauth/callback", async (req, res) => {
       );
     }
 
-    // Get Discord user ID from state (passed in /link command)
     const discordId = req.query.state || "unknown";
 
-    // Load existing linked drivers, remove old entry for this user if exists
     let drivers = loadLinkedDrivers();
     drivers = drivers.filter(d => d.discordId !== discordId);
 
-    // Save the tokens and basic info
     drivers.push({
       discordId,
       accessToken: tokenData.access_token,
@@ -259,6 +268,7 @@ app.get("/", (req, res) => {
   res.send("🏁 GSR Bot OAuth Server is running.");
 });
 
+// Test route - Formula iRating
 app.get("/test-irating", async (req, res) => {
   try {
     const drivers = loadLinkedDrivers();
@@ -266,30 +276,44 @@ app.get("/test-irating", async (req, res) => {
       return res.send("No linked drivers yet. Link one first!");
     }
 
-    const user = drivers[0]; // Your account
+    const user = drivers[0];
     const token = await getValidAccessToken(user);
 
-    const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
-
-    const response = await fetch(url, {
+    const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
+    const rootRes = await fetch(rootUrl, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
-    const json = await response.json(); // Parse even on non-OK
+    const rootJson = await rootRes.json();
+    console.log("Root chart_data response:", JSON.stringify(rootJson, null, 2));
 
-    console.log("Full chart_data JSON response:", JSON.stringify(json, null, 2));
-
-    let message = "Test result:<br>";
-    if (!response.ok) {
-      message += `API returned ${response.status}: ${await response.text()}`;
-    } else if (json.data && Array.isArray(json.data) && json.data.length > 0) {
-      const latest = json.data[json.data.length - 1];
-      message += `Your current Sports Car iRating: <b>${latest.value}</b> (from ${latest.when})`;
-    } else {
-      message += "No iRating chart data available (empty or missing 'data' array). Raw response logged in Railway logs.";
+    let chartUrl = rootUrl;
+    if (rootJson.link) {
+      chartUrl = rootJson.link;
+      console.log("Following chart link:", chartUrl);
     }
 
-    res.send(message + "<br><br>Check Railway logs for 'Full chart_data JSON response'.");
+    const chartRes = await fetch(chartUrl);
+    if (!chartRes.ok) {
+      console.error(`Chart fetch failed: ${chartRes.status}`);
+      return res.send("Chart data fetch failed.");
+    }
+
+    const chartJson = await chartRes.json();
+    console.log("Full chart JSON:", JSON.stringify(chartJson, null, 2));
+
+    let irating = "Not found";
+    if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
+      const latest = chartJson.data[chartJson.data.length - 1];
+      irating = latest.value || "No value";
+    } else {
+      irating = "No data array or empty. See logs.";
+    }
+
+    res.send(
+      `Your current Formula iRating: <b>${irating}</b><br><br>` +
+      `Check Railway logs for full JSON responses.`
+    );
   } catch (err) {
     console.error("Test error:", err.message);
     res.status(500).send("Error: " + err.message);
@@ -316,7 +340,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply("🏁 Pong! Bot is alive.");
   }
   if (interaction.commandName === "link") {
-    const state = encodeURIComponent(interaction.user.id); // Pass Discord ID
+    const state = encodeURIComponent(interaction.user.id);
     const loginUrl = `https://www.gsracing.app/oauth/login?state=${state}`;
     return interaction.reply({
       content: `🔗 Click here to link your iRacing account:\n${loginUrl}`,
