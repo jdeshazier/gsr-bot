@@ -38,12 +38,12 @@ if (
 }
 
 // ===============================
-// Persistent storage - more robust
+// Persistent storage - robust with delay & raw logging
 // ===============================
 const DATA_DIR = "/app/data";
 const LINKED_FILE = path.join(DATA_DIR, "linked-drivers.json");
 
-function loadLinkedDrivers() {
+async function loadLinkedDrivers() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       console.log("[STORAGE] Creating data dir");
@@ -54,30 +54,113 @@ function loadLinkedDrivers() {
       return [];
     }
     const raw = fs.readFileSync(LINKED_FILE, "utf8");
-    console.log("[STORAGE] Raw file size:", raw.length);
+    console.log("[STORAGE] Raw file contents on load:", raw);
     const parsed = JSON.parse(raw);
     console.log("[STORAGE] Loaded", parsed.length, "drivers");
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
     console.error("[STORAGE] Load failed:", err.message, err.stack);
-    return []; // safe fallback
+    return [];
   }
 }
 
-function saveLinkedDrivers(drivers) {
+async function saveLinkedDrivers(drivers) {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     const json = JSON.stringify(drivers, null, 2);
     fs.writeFileSync(LINKED_FILE, json, "utf8");
+    // Delay to ensure volume sync
+    await new Promise(r => setTimeout(r, 1500));
+    console.log("[STORAGE] Raw saved contents:", json);
     console.log(`[STORAGE] Saved ${drivers.length} drivers successfully`);
   } catch (err) {
     console.error("[STORAGE] Save failed:", err.message, err.stack);
   }
 }
 
-// ... (maskSecret, getValidAccessToken, getCurrentIRating remain the same)
+// ===============================
+// iRacing secret masking
+// ===============================
+function maskSecret(secret, clientId) {
+  if (!secret || !clientId) throw new Error("Missing client secret or ID");
+  const normalizedId = clientId.trim().toLowerCase();
+  const input = secret + normalizedId;
+  const hash = crypto.createHash("sha256").update(input, "utf8").digest();
+  return hash.toString("base64");
+}
+
+// ===============================
+// Token refresh helper
+// ===============================
+async function getValidAccessToken(user) {
+  if (Date.now() < user.expiresAt - 60000) return user.accessToken;
+
+  console.log(`Refreshing token for Discord ID ${user.discordId}`);
+  const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: IRACING_CLIENT_ID,
+      client_secret: maskedSecret,
+      refresh_token: user.refreshToken
+    })
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`Refresh failed: ${res.status} - ${errText}`);
+    throw new Error("Token refresh failed");
+  }
+
+  const data = await res.json();
+  user.accessToken = data.access_token;
+  user.refreshToken = data.refresh_token || user.refreshToken;
+  user.expiresAt = Date.now() + data.expires_in * 1000;
+
+  // Save immediately after refresh
+  let drivers = await loadLinkedDrivers();
+  const index = drivers.findIndex(d => d.discordId === user.discordId);
+  if (index !== -1) {
+    drivers[index] = user;
+    await saveLinkedDrivers(drivers);
+  }
+
+  return user.accessToken;
+}
+
+// ===============================
+// Fetch Road iRating (category_id=5)
+// ===============================
+async function getCurrentIRating(user) {
+  const token = await getValidAccessToken(user);
+  const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+  const rootRes = await fetch(rootUrl, { headers: { Authorization: `Bearer ${token}` } });
+
+  if (!rootRes.ok) {
+    console.error(`Root chart fetch failed: ${rootRes.status}`);
+    return null;
+  }
+
+  const rootJson = await rootRes.json();
+  let chartUrl = rootUrl;
+  if (rootJson.link) chartUrl = rootJson.link;
+
+  const chartRes = await fetch(chartUrl);
+  if (!chartRes.ok) {
+    console.error(`Chart fetch failed: ${chartRes.status}`);
+    return null;
+  }
+
+  const chartJson = await chartRes.json();
+  if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
+    return chartJson.data[chartJson.data.length - 1].value;
+  }
+  return null;
+}
 
 // ===============================
 // DISCORD + EXPRESS setup
@@ -110,7 +193,7 @@ app.get("/oauth/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// Callback - robust save with logging
+// Callback - robust multi-driver save
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -171,10 +254,9 @@ app.get("/oauth/callback", async (req, res) => {
 
     console.log("[LINK] Final saved name:", iracingName);
 
-    let drivers = loadLinkedDrivers();
+    let drivers = await loadLinkedDrivers();
     console.log(`[LINK] Loaded ${drivers.length} drivers before update`);
 
-    // Remove old entry if exists (update case)
     const existingIndex = drivers.findIndex(d => d.discordId === discordId);
     if (existingIndex !== -1) {
       console.log(`[LINK] Updating existing entry for ${discordId}`);
@@ -198,7 +280,9 @@ app.get("/oauth/callback", async (req, res) => {
 
     console.log(`[LINK] After update/push: ${drivers.length} drivers`);
 
-    saveLinkedDrivers(drivers);
+    // Extra delay for volume sync
+    await new Promise(r => setTimeout(r, 2000));
+    await saveLinkedDrivers(drivers);
     console.log(`[LINK] Saved successfully - now ${drivers.length} entries`);
 
     res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
@@ -277,7 +361,7 @@ new CronJob(
   async () => {
     console.log('[CRON] Starting Road leaderboard test');
 
-    let drivers = loadLinkedDrivers();
+    let drivers = await loadLinkedDrivers();
     if (drivers.length === 0) {
       console.log('[CRON] No linked drivers — skipping');
       return;
@@ -325,12 +409,12 @@ new CronJob(
         );
       }
 
-      // Update original
       const original = drivers.find(d => d.discordId === driver.discordId);
       if (original) original.lastRank = newRank;
     });
 
-    saveLinkedDrivers(drivers);
+    // Save updates
+    await saveLinkedDrivers(drivers);
 
     const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
     if (!channel || !channel.isTextBased()) {
