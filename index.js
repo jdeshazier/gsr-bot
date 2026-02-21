@@ -7,7 +7,6 @@ const {
   EmbedBuilder,
   PermissionsBitField
 } = require("discord.js");
-
 const express = require("express");
 const fetch = require("node-fetch");
 const crypto = require("crypto");
@@ -25,7 +24,7 @@ const {
   ANNOUNCE_CHANNEL_ID
 } = process.env;
 
-if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID || 
+if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
     !IRACING_CLIENT_SECRET || !IRACING_REDIRECT_URI || !ANNOUNCE_CHANNEL_ID) {
   console.error("❌ Missing required environment variables.");
   process.exit(1);
@@ -65,9 +64,10 @@ function maskSecret(secret, clientId) {
 
 async function getValidAccessToken(user) {
   if (Date.now() < user.expiresAt - 60000) return user.accessToken;
+
   console.log(`Refreshing token for ${user.discordId}`);
   const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetch("https://oauth.iracing.com/oauth2/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -78,6 +78,7 @@ async function getValidAccessToken(user) {
     })
   });
   if (!res.ok) throw new Error("Token refresh failed");
+
   const data = await res.json();
   user.accessToken = data.access_token;
   user.refreshToken = data.refresh_token || user.refreshToken;
@@ -91,11 +92,14 @@ async function getCurrentIRating(user) {
     const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
     const rootRes = await fetch(rootUrl, { headers: { Authorization: `Bearer ${token}` } });
     if (!rootRes.ok) return null;
+
     const rootJson = await rootRes.json();
     let chartUrl = rootUrl;
     if (rootJson.link) chartUrl = rootJson.link;
+
     const chartRes = await fetch(chartUrl);
     if (!chartRes.ok) return null;
+
     const chartJson = await chartRes.json();
     if (chartJson.data && chartJson.data.length > 0) {
       return chartJson.data[chartJson.data.length - 1].value;
@@ -116,6 +120,7 @@ app.get("/oauth/login", (req, res) => {
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   pkceStore.verifier = codeVerifier;
+
   const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile&state=${encodeURIComponent(req.query.state || "unknown")}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
   console.log("Redirecting to:", authUrl);
   res.redirect(authUrl);
@@ -263,13 +268,14 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-// 1-per-row + bold style (exactly like your screenshot)
+// ====================== IMPROVED LEADERBOARD ======================
 async function showLeaderboard(interactionOrChannel) {
   let drivers = loadLinkedDrivers();
   if (drivers.length === 0) {
     return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
   }
 
+  // Update iRatings
   for (const driver of drivers) {
     try {
       const ir = await getCurrentIRating(driver);
@@ -285,24 +291,46 @@ async function showLeaderboard(interactionOrChannel) {
   drivers.forEach((d, i) => d.lastRank = i + 1);
   saveLinkedDrivers(drivers);
 
+  // Determine embed color based on #1 change
+  let embedColor = 0x00ff88; // default
+  if (drivers[0]?.lastChange > 0) {
+    embedColor = 0x00cc66; // brighter green
+  } else if (drivers[0]?.lastChange < 0) {
+    embedColor = 0xff4444; // red
+  }
+
   const embed = new EmbedBuilder()
-    .setTitle("🏁 GSR iRating Leaderboard")
-    .setColor(0x00ff88)
-    .setTimestamp()
-    .setFooter({ text: `Updated just now • ${drivers.length} total drivers` });
+    .setColor(embedColor)
+    .setThumbnail("https://cdn.discordapp.com/attachments/1396172486558613514/1402298298450186350/Maybe.png?ex=699a6acf&is=6999194f&hm=5bd0de5d8200e0af87742858135e252c608bc6ad1d144046203fee96edbd8d17&")
+    .setDescription("**🏁 GSR iRating Leaderboard**")
+    .setTimestamp();
 
   drivers.slice(0, 20).forEach((d, i) => {
+    let rankDisplay = "";
+    if (i === 0) rankDisplay = "🥇";
+    else if (i === 1) rankDisplay = "🥈";
+    else if (i === 2) rankDisplay = "🥉";
+    else rankDisplay = `${i + 1}️⃣`;
+
     let change = "";
     if (d.lastChange !== undefined) {
-      change = d.lastChange > 0 ? ` **(+${d.lastChange})**` : ` **(${d.lastChange})**`;
+      if (d.lastChange > 0) {
+        change = ` 🟢 **+${d.lastChange}** ⬆️`;
+      } else if (d.lastChange < 0) {
+        change = ` 🔴 **${d.lastChange}** ⬇️`;
+      } else {
+        change = ` ⚪ **0**`;
+      }
     }
 
     embed.addFields({
-      name: `**${i + 1}.** ${d.iracingName || "Unknown"}`,
-      value: `**${d.lastIRating ?? "??"} iR**${change}`,
+      name: `${rankDisplay} **${i + 1}.** ${d.iracingName || "Unknown"}`,
+      value: `**${d.lastIRating ?? "??"}** iR${change}`,
       inline: false
     });
   });
+
+  embed.setFooter({ text: `Total drivers: ${drivers.length}` });
 
   if (interactionOrChannel.reply) {
     await interactionOrChannel.reply({ embeds: [embed] });
@@ -322,6 +350,7 @@ const commands = [
 ];
 
 const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+
 (async () => {
   try {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
@@ -335,7 +364,6 @@ client.login(DISCORD_TOKEN);
 
 // ====================== CRON ======================
 const { CronJob } = require('cron');
-
 new CronJob('*/5 * * * *', async () => {
   const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
   if (channel) await showLeaderboard(channel);
