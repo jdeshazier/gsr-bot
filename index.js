@@ -257,6 +257,20 @@ app.get("/", (req, res) => {
   res.send("🏁 GSR Bot OAuth Server is running.");
 });
 
+app.get("/test-irating", async (req, res) => {
+  try {
+    const drivers = loadLinkedDrivers();
+    if (drivers.length === 0) {
+      return res.send("No linked drivers yet.");
+    }
+    const user = drivers[0];  // test with first linked (you)
+    const irating = await getCurrentIRating(user);
+    res.send(`Your current Sports Car iRating: ${irating || "Not found"}`);
+  } catch (err) {
+    res.status(500).send(`Error: ${err.message}`);
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🌐 OAuth server running on port ${PORT}`);
 });
