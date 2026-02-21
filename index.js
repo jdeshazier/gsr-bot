@@ -48,7 +48,10 @@ function loadLinkedDrivers() {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
     if (!fs.existsSync(LINKED_FILE)) return [];
     const data = fs.readFileSync(LINKED_FILE, "utf8");
-    return JSON.parse(data);
+    console.log("[STORAGE] Raw file size:", data.length);
+    const parsed = JSON.parse(data);
+    console.log("[STORAGE] Loaded", parsed.length, "drivers");
+    return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
     console.error("Error loading linked-drivers:", err.message);
     return [];
@@ -58,8 +61,9 @@ function loadLinkedDrivers() {
 function saveLinkedDrivers(drivers) {
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(LINKED_FILE, JSON.stringify(drivers, null, 2), "utf8");
-    console.log(`Saved ${drivers.length} linked driver(s)`);
+    const json = JSON.stringify(drivers, null, 2);
+    fs.writeFileSync(LINKED_FILE, json, "utf8");
+    console.log(`[STORAGE] Saved ${drivers.length} drivers successfully`);
   } catch (err) {
     console.error("Error saving linked-drivers:", err.message);
   }
@@ -165,7 +169,7 @@ app.get("/oauth/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// Callback - fixed and robust
+// Callback - fixed + multi-driver safe
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -217,11 +221,7 @@ app.get("/oauth/callback", async (req, res) => {
         } else {
           iracingName = fullName;
         }
-      } else {
-        console.warn("[LINK] No valid iracing_name found");
       }
-    } else {
-      console.error("[LINK] Profile endpoint failed:", profileRes.status);
     }
 
     console.log("[LINK] Final saved name:", iracingName);
@@ -229,8 +229,10 @@ app.get("/oauth/callback", async (req, res) => {
     let drivers = loadLinkedDrivers();
     console.log(`[LINK] Loaded ${drivers.length} drivers before update`);
 
+    // Remove old entry if exists (for update)
     drivers = drivers.filter(d => d.discordId !== discordId);
 
+    // Add the new/updated driver
     drivers.push({
       discordId,
       iracingName,
