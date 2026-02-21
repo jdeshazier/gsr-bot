@@ -147,48 +147,6 @@ async function getCurrentIRating(user) {
 }
 
 // ===============================
-// Fetch name from public site using cust_id
-// ===============================
-async function fetchNameFromCustId(custId) {
-  try {
-    const url = `https://members.iracing.com/membersite/member/StatsViewer.do?custid=${custId}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.error(`[NAME FETCH] StatsViewer failed for ${custId}: ${res.status}`);
-      return "Unknown";
-    }
-
-    const text = await res.text();
-
-    // Parse name from page title (common: "First Last Stats" or "First Last - Stats")
-    let nameMatch = text.match(/<title>([^<]+) Stats?<\/title>/i);
-    if (!nameMatch) {
-      // Fallback: look for h1 or meta
-      nameMatch = text.match(/<h1[^>]*>([^<]+)<\/h1>/i) || text.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
-    }
-
-    if (nameMatch && nameMatch[1]) {
-      let fullName = nameMatch[1].trim().replace(/\s*-\s*Stats?/i, '').trim();
-      const parts = fullName.split(/\s+/);
-      if (parts.length >= 2) {
-        const first = parts[0];
-        const lastInitial = parts[parts.length - 1][0].toUpperCase();
-        const name = `${first} ${lastInitial}.`;
-        console.log(`[NAME FETCH] Parsed "${name}" from ${custId}`);
-        return name;
-      }
-      return fullName;
-    }
-
-    console.warn(`[NAME FETCH] No name found in page for ${custId}`);
-    return "Unknown";
-  } catch (err) {
-    console.error(`[NAME FETCH] Error for ${custId}: ${err.message}`);
-    return "Unknown";
-  }
-}
-
-// ===============================
 // DISCORD + EXPRESS setup
 // ===============================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -198,7 +156,7 @@ const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 let pkceStore = {};
 
-// Login route
+// Login route - NOW requests iracing.profile scope
 app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
@@ -211,7 +169,7 @@ app.get("/oauth/login", (req, res) => {
     `response_type=code` +
     `&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}` +
     `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
-    `&scope=iracing.auth` +
+    `&scope=iracing.auth iracing.profile` +
     `&code_challenge=${codeChallenge}` +
     `&code_challenge_method=S256`;
 
@@ -219,7 +177,7 @@ app.get("/oauth/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// Callback - link + save cust_id + try name
+// Callback - fetches iracing_name from /iracing/profile
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -251,77 +209,73 @@ app.get("/oauth/callback", async (req, res) => {
 
     const discordId = req.query.state || "unknown";
 
-    // Fetch chart_data root → follow link → get cust_id
-    const chartRootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
-    const chartRootRes = await fetch(chartRootUrl, {
+    // Fetch name from official /iracing/profile endpoint
+    const profileUrl = "https://oauth.iracing.com/oauth2/iracing/profile";
+    const profileRes = await fetch(profileUrl, {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
 
-    let custId = null;
     let iracingName = "Unknown";
+    if (profileRes.ok) {
+      const profileJson = await profileRes.json();
+      console.log("[LINK] /iracing/profile response:", JSON.stringify(profileJson, null, 2));
 
-    if (chartRootRes.ok) {
-      const rootJson = await chartRootRes.json();
-      let chartUrl = chartRootUrl;
-      if (rootJson.link) chartUrl = rootJson.link;
-
-      const chartRes = await fetch(chartUrl);
-      if (chartRes.ok) {
-        const chartJson = await chartRes.json();
-        console.log("[LINK] Full chart JSON:", JSON.stringify(chartJson, null, 2));
-
-        if (chartJson.cust_id) {
-          custId = chartJson.cust_id;
-          console.log("[LINK] Saved cust_id:", custId);
+      if (profileJson.iracing_name && typeof profileJson.iracing_name === 'string' && profileJson.iracing_name.trim()) {
+        const fullName = profileJson.iracing_name.trim();
+        const parts = fullName.split(/\s+/);
+        if (parts.length >= 2) {
+          const first = parts[0];
+          const lastInitial = parts[parts.length - 1][0].toUpperCase();
+          iracingName = `${first} ${lastInitial}.`;
+        } else {
+          iracingName = fullName;
         }
+      } else {
+        console.warn("[LINK] No iracing_name in profile response");
       }
+    } else {
+      console.error("[LINK] /iracing/profile failed:", profileRes.status);
     }
 
-    // If name still unknown, we rely on cron to fill it later
+    console.log("[LINK] Final saved name:", iracingName);
+
     let drivers = loadLinkedDrivers();
     drivers = drivers.filter(d => d.discordId !== discordId);
     drivers.push({
       discordId,
       iracingName,
-      custId,           // NEW
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt: Date.now() + tokenData.expires_in * 1000
     });
     saveLinkedDrivers(drivers);
 
-    res.send(`✅ Linked!<br><br>You can close this window.<br>(Name will appear soon)`);
+    res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
   } catch (err) {
     console.error("Callback error:", err);
-    res.status(500).send("Linking failed.");
+    res.status(500).send("Linking failed. Check logs.");
   }
 });
 
-// Test route (Road)
+// Root route
+app.get("/", (req, res) => {
+  res.send("🏁 GSR Bot OAuth Server is running.");
+});
+
+// Test route - Road iRating
 app.get("/test-irating", async (req, res) => {
   try {
     const drivers = loadLinkedDrivers();
-    if (drivers.length === 0) return res.send("No linked drivers.");
+    if (drivers.length === 0) return res.send("No linked drivers yet.");
     const user = drivers[0];
-    const token = await getValidAccessToken(user);
-    const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
-    const rootRes = await fetch(rootUrl, { headers: { Authorization: `Bearer ${token}` } });
-    const rootJson = await rootRes.json();
-    let chartUrl = rootUrl;
-    if (rootJson.link) chartUrl = rootJson.link;
-    const chartRes = await fetch(chartUrl);
-    const chartJson = await chartRes.json();
-    let irating = "Not found";
-    if (chartJson.data?.length > 0) {
-      irating = chartJson.data[chartJson.data.length - 1].value;
-    }
-    res.send(`Road iRating: <b>${irating}</b>`);
+    const irating = await getCurrentIRating(user);
+    res.send(`Your current Road iRating: <b>${irating ?? "Not found"}</b>`);
   } catch (err) {
     res.status(500).send("Error: " + err.message);
   }
 });
 
-app.listen(PORT, () => console.log(`🌐 Server on port ${PORT}`));
+app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`));
 
 // ===============================
 // DISCORD READY + COMMANDS
@@ -387,20 +341,6 @@ new CronJob(
 
         driver.lastIRating = irating;
         driver.lastChange = change;
-
-        // Fetch name if missing
-        if (!driver.iracingName || driver.iracingName === "Unknown") {
-          if (driver.custId) {
-  console.log(`[CRON] Attempting to fetch name for cust_id ${driver.custId}`);
-  const name = await fetchNameFromCustId(driver.custId);
-  if (name !== "Unknown") {
-    driver.iracingName = name;
-    console.log(`[CRON] Successfully set name: ${name}`);
-  } else {
-    console.log(`[CRON] Name fetch returned Unknown for ${driver.custId}`);
-            }
-          }
-        }
 
         updatedDrivers.push(driver);
       } catch (err) {
