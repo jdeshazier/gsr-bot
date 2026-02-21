@@ -108,30 +108,32 @@ async function getValidAccessToken(user) {
   return user.accessToken;
 }
 
-// Helper: Fetch current Sports Car iRating
+// Helper: Fetch current Formula iRating (category_id=6)
 async function getCurrentIRating(user) {
   const token = await getValidAccessToken(user);
 
-  const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+  const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` }
   });
 
   if (!res.ok) {
-    console.error(`iRating fetch failed: ${res.status}`);
+    console.error(`Formula iRating fetch failed: ${res.status}`);
     return null;
   }
 
   const data = await res.json();
 
-  // The latest iRating is in the last entry of data.data array
-  if (data && data.data && data.data.length > 0) {
+  // Log the full response for debugging
+  console.log("Full Formula chart_data response:", JSON.stringify(data, null, 2));
+
+  if (data && data.data && Array.isArray(data.data) && data.data.length > 0) {
     const latest = data.data[data.data.length - 1];
-    return latest.value;  // this is the iRating number
+    return latest.value;  // the iRating number
   }
 
-  console.log("No iRating data found");
+  console.log("No Formula iRating data found in response");
   return null;
 }
 
@@ -267,7 +269,7 @@ app.get("/test-irating", async (req, res) => {
     const user = drivers[0]; // Your account
     const token = await getValidAccessToken(user);
 
-    const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+    const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
 
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` }
