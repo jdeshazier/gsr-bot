@@ -156,7 +156,7 @@ const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 let pkceStore = {};
 
-// Login route - NOW requests iracing.profile scope
+// Login route
 app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
@@ -177,8 +177,91 @@ app.get("/oauth/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// Callback - fetches iracing_name from /iracing/profile
-/oauth/callback
+// Callback - fixed syntax, safe parsing, debug logs
+app.get("/oauth/callback", async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send("Missing authorization code.");
+
+  try {
+    const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: IRACING_CLIENT_ID,
+      client_secret: maskedSecret,
+      code,
+      redirect_uri: IRACING_REDIRECT_URI,
+      code_verifier: pkceStore.verifier
+    });
+
+    const tokenRes = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    });
+
+    const tokenData = await tokenRes.json();
+    console.log("TOKEN RESPONSE STATUS:", tokenRes.status);
+    console.log("TOKEN RESPONSE BODY:", JSON.stringify(tokenData, null, 2));
+
+    if (!tokenRes.ok || tokenData.error) {
+      return res.status(400).send(`OAuth Error: ${tokenData.error || "Unknown"}`);
+    }
+
+    const discordId = req.query.state || "unknown";
+
+    const profileUrl = "https://oauth.iracing.com/oauth2/iracing/profile";
+    const profileRes = await fetch(profileUrl, {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
+
+    let iracingName = "Unknown";
+    if (profileRes.ok) {
+      const profileJson = await profileRes.json();
+      console.log("[LINK] /iracing/profile response:", JSON.stringify(profileJson, null, 2));
+
+      if (profileJson.iracing_name && typeof profileJson.iracing_name === 'string' && profileJson.iracing_name.trim()) {
+        let fullName = profileJson.iracing_name.trim();
+        const nameParts = fullName.split(/\s+/);
+        if (nameParts.length >= 2) {
+          const first = nameParts[0];
+          const lastInitial = nameParts[nameParts.length - 1].charAt(0).toUpperCase();
+          iracingName = `${first} ${lastInitial}.`;
+        } else {
+          iracingName = fullName;
+        }
+      } else {
+        console.warn("[LINK] No valid iracing_name found");
+      }
+    } else {
+      console.error("[LINK] Profile endpoint failed:", profileRes.status);
+    }
+
+    console.log("[LINK] Final saved name:", iracingName);
+
+    let drivers = loadLinkedDrivers();
+    console.log(`[LINK] Loaded ${drivers.length} drivers before update`);
+
+    drivers = drivers.filter(d => d.discordId !== discordId);
+
+    drivers.push({
+      discordId,
+      iracingName,
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      expiresAt: Date.now() + tokenData.expires_in * 1000
+    });
+
+    console.log(`[LINK] After push: ${drivers.length} drivers`);
+
+    saveLinkedDrivers(drivers);
+    console.log(`[LINK] Saved successfully - now ${drivers.length} entries`);
+
+    res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
+  } catch (err) {
+    console.error("Callback error:", err.stack || err);
+    res.status(500).send("Linking failed. Check logs.");
+  }
+});
 
 // Root route
 app.get("/", (req, res) => {
@@ -240,7 +323,7 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 client.login(DISCORD_TOKEN);
 
 // ===============================
-// CRON - every 5 min test
+// CRON - every 5 min test (posts ALL drivers)
 // ===============================
 const { CronJob } = require('cron');
 
@@ -257,38 +340,35 @@ new CronJob(
 
     console.log(`[CRON] Found ${drivers.length} linked drivers`);
 
-    // 1. Update iRating for every driver (keep last known if fetch fails)
+    // Update iRating for every driver
     for (const driver of drivers) {
       try {
         const irating = await getCurrentIRating(driver);
         if (irating !== null) {
           const oldIRating = driver.lastIRating ?? irating;
           const change = irating - oldIRating;
-
           driver.lastIRating = irating;
           driver.lastChange = change;
-
           console.log(`[CRON] Updated ${driver.iracingName || driver.discordId}: ${irating} iR (change ${change})`);
         } else {
           console.log(`[CRON] No new iRating for ${driver.iracingName || driver.discordId} — using last known ${driver.lastIRating ?? '??'}`);
         }
       } catch (err) {
         console.error(`[CRON] Failed update for ${driver.discordId || 'unknown'}: ${err.message}`);
-        // Keep whatever was there before
       }
     }
 
-    // 2. Create a safe list for sorting/display (filter out invalid, treat missing iR as 0)
+    // Safe list for sorting (fallback missing iR to 0)
     const validDrivers = drivers.map(d => ({
       ...d,
-      lastIRating: d.lastIRating ?? 0,   // fallback to 0 for sorting
+      lastIRating: d.lastIRating ?? 0,
       iracingName: d.iracingName || 'Unknown'
     }));
 
-    // 3. Sort by iRating descending
+    // Sort descending
     validDrivers.sort((a, b) => b.lastIRating - a.lastIRating);
 
-    // 4. Calculate rank changes & announcements
+    // Rank changes & announcements
     const announcements = [];
     validDrivers.forEach((driver, idx) => {
       const newRank = idx + 1;
@@ -302,12 +382,12 @@ new CronJob(
         );
       }
 
-      // Update original driver with new rank
+      // Update original driver rank
       const original = drivers.find(d => d.discordId === driver.discordId);
       if (original) original.lastRank = newRank;
     });
 
-    // 5. Save all updated ranks & iRatings back to file
+    // Save updates
     saveLinkedDrivers(drivers);
 
     const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
@@ -316,7 +396,7 @@ new CronJob(
       return;
     }
 
-    // 6. Build leaderboard message - show ALL valid drivers (top 20 limit optional)
+    // Leaderboard - all drivers (top 20)
     let leaderboardMsg = '**Daily Road iRating Leaderboard** — Test (5 min)\n\n';
     const topDrivers = validDrivers.slice(0, 20);
 
