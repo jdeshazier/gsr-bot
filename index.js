@@ -21,7 +21,7 @@ const {
   IRACING_CLIENT_ID,
   IRACING_CLIENT_SECRET,
   IRACING_REDIRECT_URI,
-  ANNOUNCE_CHANNEL_ID   // ← Added this
+  ANNOUNCE_CHANNEL_ID
 } = process.env;
 
 if (
@@ -113,10 +113,10 @@ async function getValidAccessToken(user) {
   return user.accessToken;
 }
 
-// Helper: Fetch current Formula iRating (category_id=6) - follows 'link' if present
+// Helper: Fetch current Road (Sports Car) iRating (category_id=5)
 async function getCurrentIRating(user) {
   const token = await getValidAccessToken(user);
-  const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
+  const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
   const rootRes = await fetch(rootUrl, {
     headers: { Authorization: `Bearer ${token}` }
   });
@@ -137,7 +137,7 @@ async function getCurrentIRating(user) {
     return null;
   }
   const chartJson = await chartRes.json();
-  console.log("Full chart JSON from link/original:", JSON.stringify(chartJson, null, 2));
+  console.log("Full chart JSON:", JSON.stringify(chartJson, null, 2));
   if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
     const latest = chartJson.data[chartJson.data.length - 1];
     return latest.value; // the iRating number
@@ -184,7 +184,7 @@ app.get("/oauth/login", (req, res) => {
 });
 
 // --------------------------------
-// CALLBACK ROUTE
+// CALLBACK ROUTE - Link + save first name + last initial
 // --------------------------------
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
@@ -216,20 +216,45 @@ app.get("/oauth/callback", async (req, res) => {
         `Full response: ${JSON.stringify(tokenData)}`
       );
     }
+
+    // Get Discord ID
     const discordId = req.query.state || "unknown";
+
+    // Fetch chart_data to get name
+    const chartUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+    const chartRes = await fetch(chartUrl, {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
+    let iracingName = "Unknown";
+    if (chartRes.ok) {
+      const chartJson = await chartRes.json();
+      if (chartJson.name) {
+        const nameParts = chartJson.name.trim().split(/\s+/);
+        if (nameParts.length >= 2) {
+          const first = nameParts[0];
+          const lastInitial = nameParts[nameParts.length - 1][0].toUpperCase();
+          iracingName = `${first} ${lastInitial}.`;
+        } else {
+          iracingName = chartJson.name;
+        }
+      }
+    }
+
     let drivers = loadLinkedDrivers();
     drivers = drivers.filter(d => d.discordId !== discordId);
     drivers.push({
       discordId,
+      iracingName,  // Saved as "First L."
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt: Date.now() + tokenData.expires_in * 1000
     });
     saveLinkedDrivers(drivers);
-    res.send("✅ iRacing account successfully linked!<br><br>You can now close this window.");
+
+    res.send(`✅ iRacing account linked!<br><br>As: **${iracingName}**<br>You can now close this window.`);
   } catch (err) {
     console.error("Callback error:", err);
-    res.status(500).send("OAuth process failed. Check server logs.");
+    res.status(500).send("Linking failed. Check logs.");
   }
 });
 
@@ -238,7 +263,7 @@ app.get("/", (req, res) => {
   res.send("🏁 GSR Bot OAuth Server is running.");
 });
 
-// Test route - Formula iRating
+// Test route - Road (Sports Car) iRating
 app.get("/test-irating", async (req, res) => {
   try {
     const drivers = loadLinkedDrivers();
@@ -247,7 +272,7 @@ app.get("/test-irating", async (req, res) => {
     }
     const user = drivers[0];
     const token = await getValidAccessToken(user);
-    const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
+    const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
     const rootRes = await fetch(rootUrl, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -273,7 +298,7 @@ app.get("/test-irating", async (req, res) => {
       irating = "No data array or empty. See logs.";
     }
     res.send(
-      `Your current Formula iRating: <b>${irating}</b><br><br>` +
+      `Your current Road iRating: <b>${irating}</b><br><br>` +
       `Check Railway logs for full JSON responses.`
     );
   } catch (err) {
@@ -331,14 +356,14 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 client.login(DISCORD_TOKEN);
 
 // ===============================
-// DAILY LEADERBOARD CRON JOB
+// DAILY LEADERBOARD CRON JOB (every 5 min for testing)
 // ===============================
 const { CronJob } = require('cron');
 
 new CronJob(
   '*/5 * * * *',  // Every 5 minutes for testing
   async () => {
-    console.log('[CRON] Starting daily Formula iRating leaderboard test (every 5 min)');
+    console.log('[CRON] Starting Formula iRating leaderboard test (every 5 min)');
 
     let drivers = loadLinkedDrivers();
     if (drivers.length === 0) {
@@ -393,7 +418,6 @@ new CronJob(
 
     saveLinkedDrivers(updatedDrivers);
 
-    // Get channel by ID from .env
     const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
 
     if (!channel || !channel.isTextBased()) {
@@ -401,8 +425,8 @@ new CronJob(
       return;
     }
 
-    // Leaderboard message (top 20)
-    let leaderboardMsg = '**Daily Formula iRating Leaderboard** — Test (every 5 min)\n\n';
+    // Leaderboard message (top 20) - uses saved iracingName
+    let leaderboardMsg = '**Daily Road iRating Leaderboard** — Test (every 5 min)\n\n';
     updatedDrivers.slice(0, 20).forEach((d, i) => {
       const changeStr = d.lastChange
         ? (d.lastChange > 0 ? ` (+${d.lastChange})` : ` (${d.lastChange})`)
@@ -414,7 +438,6 @@ new CronJob(
       console.error('[CRON] Failed to send leaderboard:', err);
     });
 
-    // Announcements if any gains
     if (announcements.length > 0) {
       await channel.send(announcements.join('\n')).catch(err => {
         console.error('[CRON] Failed to send announcements:', err);
