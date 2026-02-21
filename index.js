@@ -150,19 +150,6 @@ app.get("/", (req, res) => {
   res.send("🏁 GSR Bot OAuth Server is running.");
 });
 
-app.get('/debug-volume', (req, res) => {
-  const fs = require('fs');
-  const path = require('path');
-  const testFile = path.join('/app/data', 'test.txt');
-  try {
-    fs.writeFileSync(testFile, 'Volume is working! ' + new Date().toISOString());
-    const content = fs.readFileSync(testFile, 'utf8');
-    res.send(`Volume test OK: ${content}`);
-  } catch (err) {
-    res.status(500).send(`Volume test FAILED: ${err.message}`);
-  }
-});
-
 app.listen(PORT, () => {
   console.log(`🌐 OAuth server running on port ${PORT}`);
 });
