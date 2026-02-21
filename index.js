@@ -184,7 +184,7 @@ app.get("/oauth/login", (req, res) => {
 });
 
 // --------------------------------
-// CALLBACK ROUTE - Link + fetch name reliably
+// CALLBACK ROUTE - Link + fetch name from full profile JSON
 // --------------------------------
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
@@ -221,59 +221,46 @@ app.get("/oauth/callback", async (req, res) => {
 
     let iracingName = "Unknown";
 
-    // Try chart_data first (for consistency with iRating fetch)
-    const chartUrlRoot = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
-    const chartRootRes = await fetch(chartUrlRoot, {
+    // Fetch profile root (presigned link)
+    const profileRootUrl = "https://members-ng.iracing.com/data/member/profile";
+    const profileRootRes = await fetch(profileRootUrl, {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
-    if (chartRootRes.ok) {
-      const chartRootJson = await chartRootRes.json();
-      console.log("[LINK] Root chart_data:", JSON.stringify(chartRootJson, null, 2));
-      let fullChartUrl = chartUrlRoot;
-      if (chartRootJson.link) {
-        fullChartUrl = chartRootJson.link;
-      }
-      const fullChartRes = await fetch(fullChartUrl);
-      if (fullChartRes.ok) {
-        const fullChartJson = await fullChartRes.json();
-        console.log("[LINK] Full chart JSON:", JSON.stringify(fullChartJson, null, 2));
-        if (fullChartJson.name && fullChartJson.name.trim()) {
-          const nameParts = fullChartJson.name.trim().split(/\s+/);
-          if (nameParts.length >= 2) {
-            const first = nameParts[0];
-            const lastInitial = nameParts[nameParts.length - 1][0].toUpperCase();
-            iracingName = `${first} ${lastInitial}.`;
-          } else {
-            iracingName = fullChartJson.name.trim();
-          }
-        }
-      }
-    }
+    if (profileRootRes.ok) {
+      const profileRootJson = await profileRootRes.json();
+      console.log("[LINK] Profile root response:", JSON.stringify(profileRootJson, null, 2));
 
-    // Fallback: Try /data/member/profile for name if chart didn't have it
-    if (iracingName === "Unknown") {
-      const profileUrl = "https://members-ng.iracing.com/data/member/profile";
-      const profileRes = await fetch(profileUrl, {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` }
-      });
-      if (profileRes.ok) {
-        const profileJson = await profileRes.json();
-        console.log("[LINK] Profile response for name:", JSON.stringify(profileJson, null, 2));
-        if (profileJson.display_name && profileJson.display_name.trim()) {
-          const nameParts = profileJson.display_name.trim().split(/\s+/);
+      let fullProfileUrl = profileRootUrl;
+      if (profileRootJson.link) {
+        fullProfileUrl = profileRootJson.link;
+        console.log("[LINK] Following profile link:", fullProfileUrl);
+      }
+
+      // Fetch full profile JSON
+      const fullProfileRes = await fetch(fullProfileUrl);
+      if (fullProfileRes.ok) {
+        const fullProfileJson = await fullProfileRes.json();
+        console.log("[LINK] Full profile JSON:", JSON.stringify(fullProfileJson, null, 2));
+
+        // Try common name fields
+        let rawName = fullProfileJson.display_name || fullProfileJson.name || "";
+        if (rawName.trim()) {
+          const nameParts = rawName.trim().split(/\s+/);
           if (nameParts.length >= 2) {
             const first = nameParts[0];
             const lastInitial = nameParts[nameParts.length - 1][0].toUpperCase();
             iracingName = `${first} ${lastInitial}.`;
           } else {
-            iracingName = profileJson.display_name.trim();
+            iracingName = rawName.trim();
           }
-        } else if (profileJson.name && profileJson.name.trim()) {
-          iracingName = profileJson.name.trim();
+        } else {
+          console.warn("[LINK] No display_name or name in full profile JSON");
         }
       } else {
-        console.error("[LINK] Profile fetch failed:", profileRes.status);
+        console.error("[LINK] Full profile fetch failed:", fullProfileRes.status);
       }
+    } else {
+      console.error("[LINK] Profile root fetch failed:", profileRootRes.status);
     }
 
     console.log("[LINK] Final saved name:", iracingName);
