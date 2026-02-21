@@ -372,7 +372,7 @@ client.login(DISCORD_TOKEN);
 const cron = require('node-cron');
 
 // Daily leaderboard at 12:00 noon CST
-cron.schedule('0 12 * * *', async () => {
+cron.schedule('*/5 * * *', async () => {
   console.log('[CRON] Starting daily Formula iRating leaderboard @ noon CST');
 
   let drivers = loadLinkedDrivers();
