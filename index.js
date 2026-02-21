@@ -9,6 +9,49 @@ const express = require("express");
 const fetch = require("node-fetch");
 const crypto = require("crypto");
 
+// These lines let us work with files on the computer
+const fs = require('fs');
+const path = require('path');
+
+// This is the permanent folder Railway gave us
+const DATA_DIR = '/app/data';
+const LINKED_FILE = path.join(DATA_DIR, 'linked-drivers.json');
+
+// Helper 1: Read the list of linked people (or empty list if no file yet)
+function loadLinkedDrivers() {
+  try {
+    // Make sure the folder exists
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    // If no file yet, return empty list
+    if (!fs.existsSync(LINKED_FILE)) {
+      return [];
+    }
+    // Read the file and turn it into a list
+    const data = fs.readFileSync(LINKED_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (err) {
+    console.error('Could not read linked-drivers.json:', err.message);
+    return []; // safe fallback
+  }
+}
+
+// Helper 2: Save the list back to the file
+function saveLinkedDrivers(drivers) {
+  try {
+    // Make sure folder exists
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    // Turn the list into text and save it
+    fs.writeFileSync(LINKED_FILE, JSON.stringify(drivers, null, 2), 'utf8');
+    console.log(`Saved ${drivers.length} linked driver(s)!`);
+  } catch (err) {
+    console.error('Could not save linked-drivers.json:', err.message);
+  }
+}
+
 // ===============================
 // ENV VARIABLES
 // ===============================
@@ -123,25 +166,66 @@ app.get("/oauth/callback", async (req, res) => {
       body: body.toString()
     });
 
-    const tokenData = await tokenResponse.json();
-
-    console.log("TOKEN RESPONSE STATUS:", tokenResponse.status);
-    console.log("TOKEN RESPONSE BODY:", JSON.stringify(tokenData, null, 2));
-
-    if (!tokenResponse.ok || tokenData.error) {
-      return res.status(tokenResponse.status || 400).send(
-        `OAuth Error: ${tokenData.error || "Unknown error"}\n` +
-        `Description: ${tokenData.error_description || "No description"}\n` +
-        `Full response: ${JSON.stringify(tokenData)}`
-      );
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error("Token failed:", tokenResponse.status, errorText);
+      return res.status(tokenResponse.status).send(`Token request failed: ${errorText}`);
     }
 
-    // Success - in a real app, store access_token + refresh_token securely
-    // (e.g. in a database tied to the Discord user who initiated the link)
-    res.send("✅ iRacing account successfully linked!<br><br>You can now close this window.");
+    const tokenData = await tokenResponse.json();
+    console.log("Got tokens:", JSON.stringify(tokenData, null, 2));
+
+    // Get the iRacing user's info (name and cust_id)
+    const memberRes = await fetch("https://members-ng.iracing.com/data/member/account", {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`
+      }
+    });
+
+    if (!memberRes.ok) {
+      throw new Error(`Could not get member info: ${memberRes.status}`);
+    }
+
+    const member = await memberRes.json();
+    const custId = member.cust_id;
+    const iracingName = member.display_name || member.name || "Unknown";
+
+    if (!custId) {
+      throw new Error("No cust_id from iRacing");
+    }
+
+    // Get who in Discord started this (from the link command)
+    const discordId = req.query.state || "unknown";
+
+    // Load current list, remove old one for this person if exists
+    let drivers = loadLinkedDrivers();
+    drivers = drivers.filter(d => d.discordId !== discordId);
+
+    // Add the new info
+    drivers.push({
+      discordId,
+      iracingCustId: custId,
+      iracingName,
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      expiresAt: Date.now() + (tokenData.expires_in * 1000),
+      lastIRating: null,  // We'll fill this later with cron
+      lastRank: null
+    });
+
+    // Save it to the permanent file!
+    saveLinkedDrivers(drivers);
+
+    // Nice message for the browser
+    res.send(
+      `Success! You are now linked.<br><br>` +
+      `iRacing: **${iracingName}** (ID #${custId})<br>` +
+      `Discord: ${discordId}<br><br>` +
+      `Close this tab and go back to Discord 😊`
+    );
   } catch (err) {
-    console.error("Callback error:", err);
-    res.status(500).send("OAuth process failed. Check server logs.");
+    console.error("Problem in callback:", err.message);
+    res.status(500).send("Something went wrong. Check bot logs.");
   }
 });
 
@@ -172,13 +256,13 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "link") {
-    return interaction.reply({
-      content:
-        "🔗 Click here to link your iRacing account:\n" +
-        "https://www.gsracing.app/oauth/login",   // ← update domain/port if testing locally
-      ephemeral: true
-    });
-  }
+  const state = encodeURIComponent(interaction.user.id);
+  const loginUrl = `https://www.gsracing.app/oauth/login?state=${state}`;
+  return interaction.reply({
+    content: `🔗 Click here to link iRacing:\n${loginUrl}`,
+    ephemeral: true
+  });
+}
 });
 
 const commands = [
