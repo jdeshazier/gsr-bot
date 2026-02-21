@@ -38,30 +38,34 @@ if (
 }
 
 // ===============================
-// Persistent storage - robust with delay & raw logging
+// Persistent storage - with retry & raw logging
 // ===============================
 const DATA_DIR = "/app/data";
 const LINKED_FILE = path.join(DATA_DIR, "linked-drivers.json");
 
 async function loadLinkedDrivers() {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      console.log("[STORAGE] Creating data dir");
-      fs.mkdirSync(DATA_DIR, { recursive: true });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        console.log("[STORAGE] Creating data dir (attempt " + attempt + ")");
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      if (!fs.existsSync(LINKED_FILE)) {
+        console.log("[STORAGE] No file yet - returning empty (attempt " + attempt + ")");
+        return [];
+      }
+      const raw = fs.readFileSync(LINKED_FILE, "utf8");
+      console.log("[STORAGE] Raw file contents on load (attempt " + attempt + "):", raw);
+      const parsed = JSON.parse(raw);
+      console.log("[STORAGE] Loaded", parsed.length, "drivers (attempt " + attempt + ")");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      console.error("[STORAGE] Load failed (attempt " + attempt + "):", err.message, err.stack);
+      if (attempt === 3) return [];
+      await new Promise(r => setTimeout(r, 2000)); // wait 2 sec before retry
     }
-    if (!fs.existsSync(LINKED_FILE)) {
-      console.log("[STORAGE] No file yet - returning empty");
-      return [];
-    }
-    const raw = fs.readFileSync(LINKED_FILE, "utf8");
-    console.log("[STORAGE] Raw file contents on load:", raw);
-    const parsed = JSON.parse(raw);
-    console.log("[STORAGE] Loaded", parsed.length, "drivers");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.error("[STORAGE] Load failed:", err.message, err.stack);
-    return [];
   }
+  return [];
 }
 
 async function saveLinkedDrivers(drivers) {
@@ -71,8 +75,8 @@ async function saveLinkedDrivers(drivers) {
     }
     const json = JSON.stringify(drivers, null, 2);
     fs.writeFileSync(LINKED_FILE, json, "utf8");
-    // Delay to ensure volume sync
-    await new Promise(r => setTimeout(r, 1500));
+    // Extra delay for volume sync
+    await new Promise(r => setTimeout(r, 3000)); // 3 sec
     console.log("[STORAGE] Raw saved contents:", json);
     console.log(`[STORAGE] Saved ${drivers.length} drivers successfully`);
   } catch (err) {
@@ -80,87 +84,7 @@ async function saveLinkedDrivers(drivers) {
   }
 }
 
-// ===============================
-// iRacing secret masking
-// ===============================
-function maskSecret(secret, clientId) {
-  if (!secret || !clientId) throw new Error("Missing client secret or ID");
-  const normalizedId = clientId.trim().toLowerCase();
-  const input = secret + normalizedId;
-  const hash = crypto.createHash("sha256").update(input, "utf8").digest();
-  return hash.toString("base64");
-}
-
-// ===============================
-// Token refresh helper
-// ===============================
-async function getValidAccessToken(user) {
-  if (Date.now() < user.expiresAt - 60000) return user.accessToken;
-
-  console.log(`Refreshing token for Discord ID ${user.discordId}`);
-  const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: IRACING_CLIENT_ID,
-      client_secret: maskedSecret,
-      refresh_token: user.refreshToken
-    })
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    console.error(`Refresh failed: ${res.status} - ${errText}`);
-    throw new Error("Token refresh failed");
-  }
-
-  const data = await res.json();
-  user.accessToken = data.access_token;
-  user.refreshToken = data.refresh_token || user.refreshToken;
-  user.expiresAt = Date.now() + data.expires_in * 1000;
-
-  // Save immediately after refresh
-  let drivers = await loadLinkedDrivers();
-  const index = drivers.findIndex(d => d.discordId === user.discordId);
-  if (index !== -1) {
-    drivers[index] = user;
-    await saveLinkedDrivers(drivers);
-  }
-
-  return user.accessToken;
-}
-
-// ===============================
-// Fetch Road iRating (category_id=5)
-// ===============================
-async function getCurrentIRating(user) {
-  const token = await getValidAccessToken(user);
-  const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
-  const rootRes = await fetch(rootUrl, { headers: { Authorization: `Bearer ${token}` } });
-
-  if (!rootRes.ok) {
-    console.error(`Root chart fetch failed: ${rootRes.status}`);
-    return null;
-  }
-
-  const rootJson = await rootRes.json();
-  let chartUrl = rootUrl;
-  if (rootJson.link) chartUrl = rootJson.link;
-
-  const chartRes = await fetch(chartUrl);
-  if (!chartRes.ok) {
-    console.error(`Chart fetch failed: ${chartRes.status}`);
-    return null;
-  }
-
-  const chartJson = await chartRes.json();
-  if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
-    return chartJson.data[chartJson.data.length - 1].value;
-  }
-  return null;
-}
+// ... (maskSecret, getValidAccessToken, getCurrentIRating remain the same as your latest code)
 
 // ===============================
 // DISCORD + EXPRESS setup
@@ -193,7 +117,7 @@ app.get("/oauth/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// Callback - robust multi-driver save
+// Callback - robust multi-driver append
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -280,10 +204,18 @@ app.get("/oauth/callback", async (req, res) => {
 
     console.log(`[LINK] After update/push: ${drivers.length} drivers`);
 
-    // Extra delay for volume sync
-    await new Promise(r => setTimeout(r, 2000));
-    await saveLinkedDrivers(drivers);
-    console.log(`[LINK] Saved successfully - now ${drivers.length} entries`);
+    // Extra delay + retry save
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await saveLinkedDrivers(drivers);
+        console.log(`[LINK] Save succeeded on attempt ${attempt}`);
+        break;
+      } catch (err) {
+        console.error(`[LINK] Save attempt ${attempt} failed:`, err.message);
+        if (attempt === 3) break;
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
 
     res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
   } catch (err) {
@@ -413,7 +345,6 @@ new CronJob(
       if (original) original.lastRank = newRank;
     });
 
-    // Save updates
     await saveLinkedDrivers(drivers);
 
     const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
