@@ -49,9 +49,7 @@ function loadLinkedDrivers() {
     if (!fs.existsSync(LINKED_FILE)) return [];
     const data = fs.readFileSync(LINKED_FILE, "utf8");
     console.log("[STORAGE] Raw file size:", data.length);
-    const parsed = JSON.parse(data);
-    console.log("[STORAGE] Loaded", parsed.length, "drivers");
-    return Array.isArray(parsed) ? parsed : [];
+    return JSON.parse(data);
   } catch (err) {
     console.error("Error loading linked-drivers:", err.message);
     return [];
@@ -61,9 +59,8 @@ function loadLinkedDrivers() {
 function saveLinkedDrivers(drivers) {
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    const json = JSON.stringify(drivers, null, 2);
-    fs.writeFileSync(LINKED_FILE, json, "utf8");
-    console.log(`[STORAGE] Saved ${drivers.length} drivers successfully`);
+    fs.writeFileSync(LINKED_FILE, JSON.stringify(drivers, null, 2), "utf8");
+    console.log(`Saved ${drivers.length} linked driver(s)`);
   } catch (err) {
     console.error("Error saving linked-drivers:", err.message);
   }
@@ -151,25 +148,31 @@ const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 let pkceStore = {};
 
-// Login route
+// Login route - FIXED: properly pass state
 app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
   pkceStore.verifier = codeVerifier;
+
+  const state = req.query.state || "unknown";   // ← This is what was missing
+
   const authUrl =
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
     `&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}` +
     `&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}` +
     `&scope=iracing.auth iracing.profile` +
+    `&state=${encodeURIComponent(state)}` +     // ← Added state here
     `&code_challenge=${codeChallenge}` +
     `&code_challenge_method=S256`;
+
   console.log("Redirecting to:", authUrl);
   res.redirect(authUrl);
 });
 
-// Callback - fixed + multi-driver safe
+// Callback - now receives correct discordId from state
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -199,7 +202,9 @@ app.get("/oauth/callback", async (req, res) => {
       return res.status(400).send(`OAuth Error: ${tokenData.error || "Unknown"}`);
     }
 
+    // NOW correctly gets the real Discord ID
     const discordId = req.query.state || "unknown";
+    console.log(`[LINK] Received discordId from state: ${discordId}`);
 
     const profileUrl = "https://oauth.iracing.com/oauth2/iracing/profile";
     const profileRes = await fetch(profileUrl, {
@@ -229,10 +234,8 @@ app.get("/oauth/callback", async (req, res) => {
     let drivers = loadLinkedDrivers();
     console.log(`[LINK] Loaded ${drivers.length} drivers before update`);
 
-    // Remove old entry if exists (for update)
     drivers = drivers.filter(d => d.discordId !== discordId);
 
-    // Add the new/updated driver
     drivers.push({
       discordId,
       iracingName,
@@ -258,7 +261,7 @@ app.get("/", (req, res) => {
   res.send("🏁 GSR Bot OAuth Server is running.");
 });
 
-// Test route - Road iRating
+// Test route
 app.get("/test-irating", async (req, res) => {
   try {
     const drivers = loadLinkedDrivers();
