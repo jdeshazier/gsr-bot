@@ -126,14 +126,67 @@ app.get("/oauth/login", (req, res) => {
 });
 
 app.get("/oauth/callback", async (req, res) => {
-  // ... (your working callback from before - unchanged) ...
-  // I'll keep it short here, but use your last working version
-  // Just make sure discordId = req.query.state
+  const code = req.query.code;
+  if (!code) return res.status(400).send("Missing authorization code.");
+
+  try {
+    const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: IRACING_CLIENT_ID,
+      client_secret: maskedSecret,
+      code,
+      redirect_uri: IRACING_REDIRECT_URI,
+      code_verifier: pkceStore.verifier
+    });
+
+    const tokenRes = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    });
+
+    const tokenData = await tokenRes.json();
+    if (!tokenRes.ok || tokenData.error) return res.status(400).send(`OAuth Error: ${tokenData.error || "Unknown"}`);
+
+    const discordId = req.query.state || "unknown";
+
+    const profileUrl = "https://oauth.iracing.com/oauth2/iracing/profile";
+    const profileRes = await fetch(profileUrl, { headers: { Authorization: `Bearer ${tokenData.access_token}` } });
+
+    let iracingName = "Unknown";
+    if (profileRes.ok) {
+      const profileJson = await profileRes.json();
+      if (profileJson.iracing_name) {
+        let fullName = profileJson.iracing_name.trim();
+        const parts = fullName.split(/\s+/);
+        if (parts.length >= 2) {
+          iracingName = `${parts[0]} ${parts[parts.length-1][0].toUpperCase()}.`;
+        } else {
+          iracingName = fullName;
+        }
+      }
+    }
+
+    let drivers = loadLinkedDrivers();
+    drivers = drivers.filter(d => d.discordId !== discordId);
+    drivers.push({
+      discordId,
+      iracingName,
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      expiresAt: Date.now() + tokenData.expires_in * 1000
+    });
+
+    saveLinkedDrivers(drivers);
+    res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
+  } catch (err) {
+    console.error("Callback error:", err);
+    res.status(500).send("Linking failed.");
+  }
 });
 
-// Root + test
 app.get("/", (req, res) => res.send("🏁 GSR Bot OAuth Server is running."));
-
 app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`));
 
 // ====================== DISCORD COMMANDS ======================
@@ -152,7 +205,21 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: `🔗 Link iRacing: ${loginUrl}`, ephemeral: true });
   }
 
-  // UNLINK - ADMIN ONLY
+  // Self unlink
+  if (interaction.commandName === "unlinkme") {
+    let drivers = loadLinkedDrivers();
+    const initial = drivers.length;
+    drivers = drivers.filter(d => d.discordId !== interaction.user.id);
+
+    if (drivers.length < initial) {
+      saveLinkedDrivers(drivers);
+      return interaction.reply({ content: "✅ You have been unlinked from the leaderboard.", ephemeral: true });
+    } else {
+      return interaction.reply({ content: "You were not linked.", ephemeral: true });
+    }
+  }
+
+  // Admin unlink
   if (interaction.commandName === "unlink") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Only administrators can use this command.", ephemeral: true });
@@ -160,59 +227,32 @@ client.on("interactionCreate", async interaction => {
     const target = interaction.options.getUser("user");
     if (!target) return interaction.reply({ content: "Please select a user.", ephemeral: true });
 
-    const drivers = loadLinkedDrivers();
-    const driver = drivers.find(d => d.discordId === target.id);
-    if (!driver) return interaction.reply({ content: "That user is not linked.", ephemeral: true });
+    let drivers = loadLinkedDrivers();
+    const initial = drivers.length;
+    drivers = drivers.filter(d => d.discordId !== target.id);
 
-    const embed = new EmbedBuilder()
-      .setTitle("⚠️ Confirm Unlink")
-      .setColor(0xff0000)
-      .setDescription("Are you sure?")
-      .addFields(
-        { name: "Discord", value: target.tag, inline: true },
-        { name: "iRacing Name", value: driver.iracingName || "Unknown", inline: true },
-        { name: "Last iRating", value: (driver.lastIRating ?? "??").toString(), inline: true }
-      );
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`unlink_yes_${target.id}`).setLabel("Yes, Unlink").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("unlink_no").setLabel("Cancel").setStyle(ButtonStyle.Secondary)
-    );
-
-    await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+    if (drivers.length < initial) {
+      saveLinkedDrivers(drivers);
+      return interaction.reply(`✅ Successfully unlinked **${target.tag}**.`);
+    } else {
+      return interaction.reply({ content: "That user was not linked.", ephemeral: true });
+    }
   }
 
-  // NEW: /leaderboard command
+  // Leaderboard
   if (interaction.commandName === "leaderboard") {
     await showLeaderboard(interaction);
   }
 });
 
-// Button handler for unlink confirmation
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isButton()) return;
-
-  if (interaction.customId.startsWith("unlink_yes_")) {
-    const targetId = interaction.customId.split("_")[2];
-    let drivers = loadLinkedDrivers();
-    drivers = drivers.filter(d => d.discordId !== targetId);
-    saveLinkedDrivers(drivers);
-    await interaction.update({ content: "✅ Driver unlinked successfully.", embeds: [], components: [] });
-  }
-
-  if (interaction.customId === "unlink_no") {
-    await interaction.update({ content: "Unlink cancelled.", embeds: [], components: [] });
-  }
-});
-
-// Reusable function for nice leaderboard embed
-async function showLeaderboard(interaction) {
+// Reusable beautiful leaderboard function
+async function showLeaderboard(interactionOrChannel) {
   let drivers = loadLinkedDrivers();
   if (drivers.length === 0) {
-    return interaction.reply({ content: "No drivers linked yet.", ephemeral: true });
+    return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
   }
 
-  // Quick update iRatings (optional - can be removed if you want it instant)
+  // Update iRatings quickly
   for (const driver of drivers) {
     try {
       const ir = await getCurrentIRating(driver);
@@ -234,27 +274,36 @@ async function showLeaderboard(interaction) {
     .setTimestamp()
     .setFooter({ text: `Updated just now • ${drivers.length} total drivers` });
 
+  const rankEmojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟","11️⃣","12️⃣","13️⃣","14️⃣","15️⃣","16️⃣","17️⃣","18️⃣","19️⃣","20️⃣"];
+
   drivers.slice(0, 20).forEach((d, i) => {
     let change = "";
-    if (d.lastChange) change = d.lastChange > 0 ? ` **(+${d.lastChange})** ⬆️` : ` **(${d.lastChange})** ⬇️`;
+    if (d.lastChange) {
+      change = d.lastChange > 0 ? ` **(+${d.lastChange})** ⬆️` : ` **(${d.lastChange})** ⬇️`;
+    }
     embed.addFields({
-      name: `${i+1}. ${d.iracingName || "Unknown"}`,
+      name: `${rankEmojis[i]} ${d.iracingName || "Unknown"}`,
       value: `${d.lastIRating ?? "??"} iR${change}`,
       inline: true
     });
   });
 
-  await interaction.reply({ embeds: [embed] });
+  if (interactionOrChannel.reply) {
+    await interactionOrChannel.reply({ embeds: [embed] });
+  } else {
+    await interactionOrChannel.send({ embeds: [embed] });
+  }
 }
 
 // ====================== REGISTER COMMANDS ======================
 const commands = [
   { name: "ping", description: "Test bot" },
   { name: "link", description: "Link iRacing account" },
+  { name: "unlinkme", description: "Unlink yourself from the leaderboard" },
   { 
     name: "unlink", 
-    description: "Admin: Unlink a driver", 
-    options: [{ name: "user", description: "Discord user to unlink", type: 6, required: true }]
+    description: "Admin: Unlink another driver", 
+    options: [{ name: "user", description: "The user to unlink", type: 6, required: true }]
   },
   { name: "leaderboard", description: "Show current Road iRating leaderboard" }
 ];
@@ -263,7 +312,7 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 (async () => {
   try {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-    console.log("✅ Commands registered (including /leaderboard).");
+    console.log("✅ Commands registered.");
   } catch (err) {
     console.error(err);
   }
@@ -271,11 +320,10 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
 client.login(DISCORD_TOKEN);
 
-// ====================== CRON (same nice embed) ======================
+// ====================== CRON ======================
 const { CronJob } = require('cron');
 
 new CronJob('*/5 * * * *', async () => {
   const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
-  if (!channel) return;
-  await showLeaderboard({ reply: async (msg) => channel.send(msg) }); // reuse the same function
+  if (channel) await showLeaderboard(channel);
 }, null, true, 'America/Chicago');
