@@ -97,44 +97,39 @@ app.get("/oauth/login", (req, res) => {
 
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
-
   if (!code) {
     return res.status(400).send("Missing authorization code.");
   }
 
   try {
-    	const normalized_id = id.trim().toLowerCase();
-	const encoder = new TextEncoder();
-  	const encoded = encoder.encode(`${IRACING_CLIENT_SECRET}${normalized_id}`);
-	const digest = await crypto.subtle.digest("SHA-256", encoded);
-	
-	const masked_id = String.fromCharCode(...new Uint8Array(digest)));
-    
+    const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
 
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": `Basic ${masked_id}`
+        "Content-Type": "application/x-www-form-urlencoded"
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
+        client_id: IRACING_CLIENT_ID,
+        client_secret: maskedSecret,          // ← This was missing / wrong before
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
-        code_verifier: pkceStore.verifier,
-        client_id: IRACING_CLIENT_ID
+        code_verifier: pkceStore.verifier
       })
     });
 
     const tokenData = await tokenResponse.json();
+    console.log("TOKEN RESPONSE:", tokenData);   // ← look here for exact error
 
-    console.log("TOKEN RESPONSE:", tokenData);
-
-    if (tokenData.error) {
-      return res.status(500).send(`OAuth Error: ${tokenData.error}`);
+    if (!tokenResponse.ok || tokenData.error) {
+      console.error("Token error details:", tokenData);
+      return res.status(tokenResponse.status).send(`OAuth Error: ${tokenData.error_description || tokenData.error || 'Unknown'}`);
     }
 
-    res.send("✅ iRacing account successfully linked!");
+    // Success - you now have tokenData.access_token, .refresh_token, .expires_in
+    // In a real app you'd store these securely per-user (maybe in DB tied to Discord user ID)
+    res.send("✅ iRacing account successfully linked! Token acquired.");
   } catch (err) {
     console.error("OAuth Error:", err);
     res.status(500).send("OAuth failed.");
