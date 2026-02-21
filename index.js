@@ -322,67 +322,97 @@ client.login(DISCORD_TOKEN);
 const { CronJob } = require('cron');
 
 new CronJob(
-  '*/5 * * * *',
+  '*/5 * * * *',  // keep for testing
   async () => {
     console.log('[CRON] Starting Road leaderboard test');
 
     let drivers = loadLinkedDrivers();
-    if (drivers.length === 0) return console.log('[CRON] No drivers');
+    if (drivers.length === 0) {
+      console.log('[CRON] No linked drivers — skipping');
+      return;
+    }
 
-    let updatedDrivers = [];
-
+    // Update iRating for as many as possible
     for (const driver of drivers) {
       try {
         const irating = await getCurrentIRating(driver);
-        if (irating === null) continue;
+        if (irating !== null) {
+          const oldIRating = driver.lastIRating ?? irating;
+          const change = irating - oldIRating;
 
-        const oldIRating = driver.lastIRating ?? irating;
-        const change = irating - oldIRating;
+          driver.lastIRating = irating;
+          driver.lastChange = change;
 
-        driver.lastIRating = irating;
-        driver.lastChange = change;
-
-        updatedDrivers.push(driver);
+          console.log(`[CRON] Updated ${driver.iracingName || driver.discordId}: ${irating} iR (change ${change})`);
+        } else {
+          console.log(`[CRON] No new iRating for ${driver.iracingName || driver.discordId} — keeping last known`);
+        }
       } catch (err) {
-        console.error(`[CRON] Error for ${driver.discordId}: ${err.message}`);
+        console.error(`[CRON] Failed to update ${driver.discordId || 'unknown'}: ${err.message}`);
+        // Keep last known data
       }
     }
 
-    if (updatedDrivers.length === 0) return;
+    // Sort all drivers by lastIRating (descending), treat missing as 0
+    drivers.sort((a, b) => {
+      const aRating = a.lastIRating ?? 0;
+      const bRating = b.lastIRating ?? 0;
+      return bRating - aRating;
+    });
 
-    updatedDrivers.sort((a, b) => b.lastIRating - a.lastIRating);
-
+    // Build announcements for rank gains
     const announcements = [];
-    updatedDrivers.forEach((d, i) => {
-      const newRank = i + 1;
-      const oldRank = d.lastRank ?? Infinity;
+    drivers.forEach((driver, idx) => {
+      const newRank = idx + 1;
+      const oldRank = driver.lastRank ?? Infinity;
+
       if (newRank < oldRank && oldRank !== Infinity) {
         const spots = oldRank - newRank;
-        announcements.push(`**${d.iracingName || 'Unknown'}** gained ${spots} spot${spots === 1 ? '' : 's'}! Now #${newRank}`);
+        announcements.push(
+          `**${driver.iracingName || 'Unknown'}** gained ${spots} spot${spots === 1 ? '' : 's'}! ` +
+          `Now #${newRank} with ${driver.lastIRating ?? '??'} iR`
+        );
       }
-      d.lastRank = newRank;
+
+      driver.lastRank = newRank;
     });
 
-    saveLinkedDrivers(updatedDrivers);
+    // Save all updates back
+    saveLinkedDrivers(drivers);
 
     const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
-    if (!channel?.isTextBased()) {
-      return console.error(`[CRON] Channel ${ANNOUNCE_CHANNEL_ID} not found`);
+    if (!channel || !channel.isTextBased()) {
+      console.error(`[CRON] Channel ID ${ANNOUNCE_CHANNEL_ID} not found or not text-based`);
+      return;
     }
 
-    let msg = '**Daily Road iRating Leaderboard** — Test (5 min)\n\n';
-    updatedDrivers.slice(0, 20).forEach((d, i) => {
-      const chg = d.lastChange ? (d.lastChange > 0 ? ` (+${d.lastChange})` : ` (${d.lastChange})`) : '';
-      msg += `${i + 1}. **${d.iracingName || 'Unknown'}** — ${d.lastIRating} iR${chg}\n`;
+    // Build leaderboard message - show ALL drivers (or top 20 if many)
+    let leaderboardMsg = '**Daily Road iRating Leaderboard** — Test (5 min)\n\n';
+    const displayDrivers = drivers.slice(0, 20); // limit to top 20 if >20 linked
+    displayDrivers.forEach((d, i) => {
+      const ir = d.lastIRating ?? '??';
+      const changeStr = d.lastChange
+        ? (d.lastChange > 0 ? ` (+${d.lastChange})` : ` (${d.lastChange})`)
+        : '';
+      leaderboardMsg += `${i + 1}. **${d.iracingName || 'Unknown'}** — ${ir} iR${changeStr}\n`;
     });
 
-    await channel.send(msg).catch(console.error);
-
-    if (announcements.length) {
-      await channel.send(announcements.join('\n')).catch(console.error);
+    if (displayDrivers.length === 0) {
+      leaderboardMsg += "No recent iRating data available yet.\n";
     }
 
-    console.log('[CRON] Posted');
+    await channel.send(leaderboardMsg).catch(err => {
+      console.error('[CRON] Failed to send leaderboard:', err);
+    });
+
+    // Send gains if any
+    if (announcements.length > 0) {
+      await channel.send(announcements.join('\n')).catch(err => {
+        console.error('[CRON] Failed to send announcements:', err);
+      });
+    }
+
+    console.log(`[CRON] Posted leaderboard with ${displayDrivers.length} entries`);
   },
   null,
   true,
