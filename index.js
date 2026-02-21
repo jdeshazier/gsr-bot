@@ -5,10 +5,7 @@ const {
   REST,
   Routes,
   EmbedBuilder,
-  PermissionsBitField,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle
+  PermissionsBitField
 } = require("discord.js");
 
 const express = require("express");
@@ -206,7 +203,6 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: `🔗 Link iRacing: ${loginUrl}`, ephemeral: true });
   }
 
-  // Self unlink
   if (interaction.commandName === "unlinkme") {
     let drivers = loadLinkedDrivers();
     const initial = drivers.length;
@@ -219,7 +215,6 @@ client.on("interactionCreate", async interaction => {
     }
   }
 
-  // Admin unlink
   if (interaction.commandName === "unlink") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Only administrators can use this command.", ephemeral: true });
@@ -238,31 +233,24 @@ client.on("interactionCreate", async interaction => {
     }
   }
 
-  // New: My iRating
   if (interaction.commandName === "myirating") {
     const drivers = loadLinkedDrivers();
     const driver = drivers.find(d => d.discordId === interaction.user.id);
-    if (!driver) {
-      return interaction.reply({ content: "You are not linked yet. Use `/link` first!", ephemeral: true });
-    }
+    if (!driver) return interaction.reply({ content: "You are not linked yet. Use `/link` first!", ephemeral: true });
 
-    const currentIR = driver.lastIRating ?? "??";
-    let changeText = "";
+    const current = driver.lastIRating ?? "??";
+    let changeText = "No change yet";
     if (driver.lastChange !== undefined) {
-      changeText = driver.lastChange > 0 
-        ? `**(+${driver.lastChange})** ⬆️` 
-        : driver.lastChange < 0 
-          ? `**(${driver.lastChange})** ⬇️` 
-          : "No change";
+      changeText = driver.lastChange > 0 ? `**+${driver.lastChange}** 🟢` : `**${driver.lastChange}** 🔴`;
     }
 
     const embed = new EmbedBuilder()
-      .setTitle(`📊 Your iRating`)
+      .setTitle("📊 Your iRating")
       .setColor(0x00ff88)
       .addFields(
         { name: "iRacing Name", value: driver.iracingName || "Unknown", inline: true },
-        { name: "Current iRating", value: currentIR.toString(), inline: true },
-        { name: "Change (last update)", value: changeText || "No data yet", inline: true },
+        { name: "Current iRating", value: current.toString(), inline: true },
+        { name: "Change", value: changeText, inline: true },
         { name: "Current Rank", value: driver.lastRank ? `#${driver.lastRank}` : "Not ranked yet", inline: true }
       )
       .setTimestamp();
@@ -270,20 +258,18 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ embeds: [embed] });
   }
 
-  // Leaderboard
   if (interaction.commandName === "leaderboard") {
     await showLeaderboard(interaction);
   }
 });
 
-// Beautiful Leaderboard Function (GSR Title + Rank Emojis + 3 per row)
+// 1-per-row Leaderboard with position change
 async function showLeaderboard(interactionOrChannel) {
   let drivers = loadLinkedDrivers();
   if (drivers.length === 0) {
     return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
   }
 
-  // Update iRatings
   for (const driver of drivers) {
     try {
       const ir = await getCurrentIRating(driver);
@@ -305,17 +291,27 @@ async function showLeaderboard(interactionOrChannel) {
     .setTimestamp()
     .setFooter({ text: `Updated just now • ${drivers.length} total drivers` });
 
-  const rankEmojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟","11️⃣","12️⃣","13️⃣","14️⃣","15️⃣","16️⃣","17️⃣","18️⃣","19️⃣","20️⃣"];
-
   drivers.slice(0, 20).forEach((d, i) => {
     let change = "";
+    let positionChange = "";
+
     if (d.lastChange) {
-      change = d.lastChange > 0 ? ` **(+${d.lastChange})** ⬆️` : ` **(${d.lastChange})** ⬇️`;
+      change = d.lastChange > 0 
+        ? ` **(+${d.lastChange})** 🟢` 
+        : ` **(${d.lastChange})** 🔴`;
     }
+
+    if (d.lastRank !== undefined && d.lastRank !== i + 1) {
+      const spots = Math.abs(d.lastRank - (i + 1));
+      positionChange = (i + 1) < d.lastRank 
+        ? ` ↑${spots} spots` 
+        : ` ↓${spots} spot${spots > 1 ? 's' : ''}`;
+    }
+
     embed.addFields({
-      name: `${rankEmojis[i]} ${d.iracingName || "Unknown"}`,
-      value: `${d.lastIRating ?? "??"} iR${change}`,
-      inline: true
+      name: `${i + 1}. ${d.iracingName || "Unknown"}`,
+      value: `${d.lastIRating ?? "??"} iR${change}${positionChange}`,
+      inline: false
     });
   });
 
@@ -330,13 +326,9 @@ async function showLeaderboard(interactionOrChannel) {
 const commands = [
   { name: "ping", description: "Test bot" },
   { name: "link", description: "Link iRacing account" },
-  { name: "unlinkme", description: "Unlink yourself from the leaderboard" },
-  { 
-    name: "unlink", 
-    description: "Admin: Unlink another driver", 
-    options: [{ name: "user", description: "The user to unlink", type: 6, required: true }]
-  },
-  { name: "myirating", description: "Show your current iRating and rank" },
+  { name: "unlinkme", description: "Unlink yourself" },
+  { name: "unlink", description: "Admin: Unlink another driver", options: [{ name: "user", description: "User to unlink", type: 6, required: true }] },
+  { name: "myirating", description: "Show your personal iRating" },
   { name: "leaderboard", description: "Show GSR iRating Leaderboard" }
 ];
 
@@ -352,7 +344,7 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
 client.login(DISCORD_TOKEN);
 
-// ====================== CRON (every 5 min for testing) ======================
+// ====================== CRON ======================
 const { CronJob } = require('cron');
 
 new CronJob('*/5 * * * *', async () => {
