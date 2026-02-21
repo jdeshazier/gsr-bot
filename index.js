@@ -103,17 +103,26 @@ app.get("/oauth/callback", async (req, res) => {
   }
 
   try {
+        const normalized_id = id.trim().toLowerCase();
+    const encoder = new TextEncoder();
+      const encoded = encoder.encode(${IRACING_CLIENT_SECRET}${normalized_id});
+    const digest = await crypto.subtle.digest("SHA-256", encoded);
+
+    const masked_id = String.fromCharCode(... new Uint8Array(digest)));
+
+
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": Basic ${masked_id}
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
-        client_id: IRACING_CLIENT_ID,
         code: code,
         redirect_uri: IRACING_REDIRECT_URI,
-        code_verifier: pkceStore.verifier
+        code_verifier: pkceStore.verifier,
+        client_id: IRACING_CLIENT_ID
       })
     });
 
@@ -122,7 +131,7 @@ app.get("/oauth/callback", async (req, res) => {
     console.log("TOKEN RESPONSE:", tokenData);
 
     if (tokenData.error) {
-      return res.status(500).send(`OAuth Error: ${tokenData.error}`);
+      return res.status(500).send(OAuth Error: ${tokenData.error});
     }
 
     res.send("✅ iRacing account successfully linked!");
