@@ -187,7 +187,7 @@ app.get("/oauth/callback", async (req, res) => {
 app.get("/", (req, res) => res.send("🏁 GSR Bot OAuth Server is running."));
 app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`));
 
-// ====================== DISCORD COMMANDS ======================
+// ====================== DISCORD ======================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once("ready", () => console.log("✅ Bot logged in!"));
@@ -241,7 +241,7 @@ client.on("interactionCreate", async interaction => {
     const current = driver.lastIRating ?? "??";
     let changeText = "No change yet";
     if (driver.lastChange !== undefined) {
-      changeText = driver.lastChange > 0 ? `**+${driver.lastChange}** 🟢` : `**${driver.lastChange}** 🔴`;
+      changeText = driver.lastChange > 0 ? `**+${driver.lastChange}**` : `**${driver.lastChange}**`;
     }
 
     const embed = new EmbedBuilder()
@@ -263,7 +263,7 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-// 1-per-row Leaderboard with position change
+// 1-per-row + bold style (exactly like your screenshot)
 async function showLeaderboard(interactionOrChannel) {
   let drivers = loadLinkedDrivers();
   if (drivers.length === 0) {
@@ -293,24 +293,13 @@ async function showLeaderboard(interactionOrChannel) {
 
   drivers.slice(0, 20).forEach((d, i) => {
     let change = "";
-    let positionChange = "";
-
-    if (d.lastChange) {
-      change = d.lastChange > 0 
-        ? ` **(+${d.lastChange})** 🟢` 
-        : ` **(${d.lastChange})** 🔴`;
-    }
-
-    if (d.lastRank !== undefined && d.lastRank !== i + 1) {
-      const spots = Math.abs(d.lastRank - (i + 1));
-      positionChange = (i + 1) < d.lastRank 
-        ? ` ↑${spots} spots` 
-        : ` ↓${spots} spot${spots > 1 ? 's' : ''}`;
+    if (d.lastChange !== undefined) {
+      change = d.lastChange > 0 ? ` **(+${d.lastChange})**` : ` **(${d.lastChange})**`;
     }
 
     embed.addFields({
-      name: `${i + 1}. ${d.iracingName || "Unknown"}`,
-      value: `${d.lastIRating ?? "??"} iR${change}${positionChange}`,
+      name: `**${i + 1}.** ${d.iracingName || "Unknown"}`,
+      value: `**${d.lastIRating ?? "??"} iR**${change}`,
       inline: false
     });
   });
