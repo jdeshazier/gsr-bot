@@ -62,6 +62,79 @@ function saveLinkedDrivers(drivers) {
   }
 }
 
+// Helper: Get a valid (fresh) access token for a user (refreshes if needed)
+async function getValidAccessToken(user) {
+  // If still valid (with 1 min buffer), return it
+  if (Date.now() < user.expiresAt - 60000) {
+    return user.accessToken;
+  }
+
+  console.log(`Refreshing token for Discord ID ${user.discordId}`);
+
+  const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
+
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: IRACING_CLIENT_ID,
+      client_secret: maskedSecret,
+      refresh_token: user.refreshToken
+    })
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`Refresh failed for ${user.discordId}: ${res.status} - ${errText}`);
+    throw new Error("Token refresh failed");
+  }
+
+  const data = await res.json();
+
+  // Update user's tokens
+  user.accessToken = data.access_token;
+  user.refreshToken = data.refresh_token || user.refreshToken;
+  user.expiresAt = Date.now() + data.expires_in * 1000;
+
+  // Save updated user back to file
+  let drivers = loadLinkedDrivers();
+  const index = drivers.findIndex(d => d.discordId === user.discordId);
+  if (index !== -1) {
+    drivers[index] = user;
+    saveLinkedDrivers(drivers);
+  }
+
+  return user.accessToken;
+}
+
+// Helper: Fetch current Sports Car iRating
+async function getCurrentIRating(user) {
+  const token = await getValidAccessToken(user);
+
+  const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!res.ok) {
+    console.error(`iRating fetch failed: ${res.status}`);
+    return null;
+  }
+
+  const data = await res.json();
+
+  // The latest iRating is in the last entry of data.data array
+  if (data && data.data && data.data.length > 0) {
+    const latest = data.data[data.data.length - 1];
+    return latest.value;  // this is the iRating number
+  }
+
+  console.log("No iRating data found");
+  return null;
+}
+
 // ===============================
 // iRacing client secret masking (REQUIRED by iRacing)
 // ===============================
