@@ -364,7 +364,7 @@ client.login(DISCORD_TOKEN);
 
 // ====================== CRON ======================
 const { CronJob } = require('cron');
-new CronJob('*/5 * * * *', async () => {
+new CronJob('0 12 * * *', async () => {
   const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
   if (channel) await showLeaderboard(channel);
 }, null, true, 'America/Chicago');
