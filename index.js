@@ -138,7 +138,7 @@ app.get("/oauth/login", (req, res) => {
 });
 
 // --------------------------------
-// CALLBACK ROUTE - Exchange code for token
+// CALLBACK ROUTE - Exchange code for token + store user
 // --------------------------------
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
@@ -175,33 +175,42 @@ app.get("/oauth/callback", async (req, res) => {
     const tokenData = await tokenResponse.json();
     console.log("Got tokens:", JSON.stringify(tokenData, null, 2));
 
-    // Get the iRacing user's info (name and cust_id)
-    const memberRes = await fetch("https://members-ng.iracing.com/data/member/account", {
-      headers: {
-        Authorization: `Bearer ${tokenData.access_token}`
+    // FIXED: Use chart_data endpoint to get the authenticated member's info
+    // (this call returns the current user's chart, but root often has cust_id and name)
+    const memberRes = await fetch(
+      "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5",
+      {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`
+        }
       }
-    });
+    );
 
     if (!memberRes.ok) {
-      throw new Error(`Could not get member info: ${memberRes.status}`);
+      const errText = await memberRes.text();
+      console.error("Member info (chart_data) fetch failed:", memberRes.status, errText);
+      throw new Error(`Could not get member info: ${memberRes.status} - ${errText}`);
     }
 
     const member = await memberRes.json();
+
+    // Parse from chart_data response (root level fields)
     const custId = member.cust_id;
-    const iracingName = member.display_name || member.name || "Unknown";
+    const iracingName = member.name || "Unknown";  // field is usually "name"
 
     if (!custId) {
-      throw new Error("No cust_id from iRacing");
+      console.error("No cust_id in chart_data response:", JSON.stringify(member, null, 2));
+      throw new Error("No cust_id returned");
     }
 
-    // Get who in Discord started this (from the link command)
+    // Get Discord user ID from state (passed from /link)
     const discordId = req.query.state || "unknown";
 
-    // Load current list, remove old one for this person if exists
+    // Load current linked drivers, remove old entry for this Discord ID
     let drivers = loadLinkedDrivers();
     drivers = drivers.filter(d => d.discordId !== discordId);
 
-    // Add the new info
+    // Add the new linked user
     drivers.push({
       discordId,
       iracingCustId: custId,
@@ -209,23 +218,23 @@ app.get("/oauth/callback", async (req, res) => {
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt: Date.now() + (tokenData.expires_in * 1000),
-      lastIRating: null,  // We'll fill this later with cron
+      lastIRating: null,
       lastRank: null
     });
 
-    // Save it to the permanent file!
     saveLinkedDrivers(drivers);
 
-    // Nice message for the browser
+    // Success message
     res.send(
-      `Success! You are now linked.<br><br>` +
-      `iRacing: **${iracingName}** (ID #${custId})<br>` +
-      `Discord: ${discordId}<br><br>` +
-      `Close this tab and go back to Discord 😊`
+      `✅ Success! Your iRacing account is linked.<br><br>` +
+      `Name: **${iracingName}**<br>` +
+      `Cust ID: #${custId}<br>` +
+      `Discord ID: ${discordId}<br><br>` +
+      `You can close this tab now and go back to Discord.`
     );
   } catch (err) {
-    console.error("Problem in callback:", err.message);
-    res.status(500).send("Something went wrong. Check bot logs.");
+    console.error("Problem in callback:", err.message, err.stack);
+    res.status(500).send("Linking failed. Check the bot logs in Railway.");
   }
 });
 
