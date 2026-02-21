@@ -20,7 +20,8 @@ const {
   GUILD_ID,
   IRACING_CLIENT_ID,
   IRACING_CLIENT_SECRET,
-  IRACING_REDIRECT_URI
+  IRACING_REDIRECT_URI,
+  ANNOUNCE_CHANNEL_ID   // ← Added this
 } = process.env;
 
 if (
@@ -29,7 +30,8 @@ if (
   !GUILD_ID ||
   !IRACING_CLIENT_ID ||
   !IRACING_CLIENT_SECRET ||
-  !IRACING_REDIRECT_URI
+  !IRACING_REDIRECT_URI ||
+  !ANNOUNCE_CHANNEL_ID
 ) {
   console.error("❌ Missing required environment variables.");
   process.exit(1);
@@ -78,15 +80,11 @@ function maskSecret(secret, clientId) {
 
 // Helper: Get a valid (fresh) access token for a user (refreshes if needed)
 async function getValidAccessToken(user) {
-  // If still valid (with 1 min buffer), return it
   if (Date.now() < user.expiresAt - 60000) {
     return user.accessToken;
   }
-
   console.log(`Refreshing token for Discord ID ${user.discordId}`);
-
   const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
-
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -97,69 +95,53 @@ async function getValidAccessToken(user) {
       refresh_token: user.refreshToken
     })
   });
-
   if (!res.ok) {
     const errText = await res.text();
     console.error(`Refresh failed for ${user.discordId}: ${res.status} - ${errText}`);
     throw new Error("Token refresh failed");
   }
-
   const data = await res.json();
-
   user.accessToken = data.access_token;
   user.refreshToken = data.refresh_token || user.refreshToken;
   user.expiresAt = Date.now() + data.expires_in * 1000;
-
-  // Save updated tokens
   let drivers = loadLinkedDrivers();
   const index = drivers.findIndex(d => d.discordId === user.discordId);
   if (index !== -1) {
     drivers[index] = user;
     saveLinkedDrivers(drivers);
   }
-
   return user.accessToken;
 }
 
 // Helper: Fetch current Formula iRating (category_id=6) - follows 'link' if present
 async function getCurrentIRating(user) {
   const token = await getValidAccessToken(user);
-
   const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
-
   const rootRes = await fetch(rootUrl, {
     headers: { Authorization: `Bearer ${token}` }
   });
-
   if (!rootRes.ok) {
     console.error(`Root chart fetch failed: ${rootRes.status}`);
     return null;
   }
-
   const rootJson = await rootRes.json();
   console.log("Root chart_data response:", JSON.stringify(rootJson, null, 2));
-
   let chartUrl = rootUrl;
   if (rootJson.link) {
     chartUrl = rootJson.link;
     console.log("Following chart link:", chartUrl);
   }
-
   const chartRes = await fetch(chartUrl);
-
   if (!chartRes.ok) {
     console.error(`Chart data fetch from link failed: ${chartRes.status}`);
     return null;
   }
-
   const chartJson = await chartRes.json();
   console.log("Full chart JSON from link/original:", JSON.stringify(chartJson, null, 2));
-
   if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
     const latest = chartJson.data[chartJson.data.length - 1];
     return latest.value; // the iRating number
   }
-
   console.log("No 'data' array or empty in chart JSON");
   return null;
 }
@@ -188,9 +170,7 @@ app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-
   pkceStore.verifier = codeVerifier;
-
   const authUrl =
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
@@ -199,7 +179,6 @@ app.get("/oauth/login", (req, res) => {
     `&scope=iracing.auth` +
     `&code_challenge=${codeChallenge}` +
     `&code_challenge_method=S256`;
-
   console.log("Redirecting to:", authUrl);
   res.redirect(authUrl);
 });
@@ -212,7 +191,6 @@ app.get("/oauth/callback", async (req, res) => {
   if (!code) {
     return res.status(400).send("Missing authorization code.");
   }
-
   try {
     const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
     const body = new URLSearchParams({
@@ -223,17 +201,14 @@ app.get("/oauth/callback", async (req, res) => {
       redirect_uri: IRACING_REDIRECT_URI,
       code_verifier: pkceStore.verifier
     });
-
     const tokenResponse = await fetch(TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString()
     });
-
     const tokenData = await tokenResponse.json();
     console.log("TOKEN RESPONSE STATUS:", tokenResponse.status);
     console.log("TOKEN RESPONSE BODY:", JSON.stringify(tokenData, null, 2));
-
     if (!tokenResponse.ok || tokenData.error) {
       return res.status(tokenResponse.status || 400).send(
         `OAuth Error: ${tokenData.error || "Unknown error"}\n` +
@@ -241,21 +216,16 @@ app.get("/oauth/callback", async (req, res) => {
         `Full response: ${JSON.stringify(tokenData)}`
       );
     }
-
     const discordId = req.query.state || "unknown";
-
     let drivers = loadLinkedDrivers();
     drivers = drivers.filter(d => d.discordId !== discordId);
-
     drivers.push({
       discordId,
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt: Date.now() + tokenData.expires_in * 1000
     });
-
     saveLinkedDrivers(drivers);
-
     res.send("✅ iRacing account successfully linked!<br><br>You can now close this window.");
   } catch (err) {
     console.error("Callback error:", err);
@@ -275,33 +245,26 @@ app.get("/test-irating", async (req, res) => {
     if (drivers.length === 0) {
       return res.send("No linked drivers yet. Link one first!");
     }
-
     const user = drivers[0];
     const token = await getValidAccessToken(user);
-
     const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=6";
     const rootRes = await fetch(rootUrl, {
       headers: { Authorization: `Bearer ${token}` }
     });
-
     const rootJson = await rootRes.json();
     console.log("Root chart_data response:", JSON.stringify(rootJson, null, 2));
-
     let chartUrl = rootUrl;
     if (rootJson.link) {
       chartUrl = rootJson.link;
       console.log("Following chart link:", chartUrl);
     }
-
     const chartRes = await fetch(chartUrl);
     if (!chartRes.ok) {
       console.error(`Chart fetch failed: ${chartRes.status}`);
       return res.send("Chart data fetch failed.");
     }
-
     const chartJson = await chartRes.json();
     console.log("Full chart JSON:", JSON.stringify(chartJson, null, 2));
-
     let irating = "Not found";
     if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
       const latest = chartJson.data[chartJson.data.length - 1];
@@ -309,7 +272,6 @@ app.get("/test-irating", async (req, res) => {
     } else {
       irating = "No data array or empty. See logs.";
     }
-
     res.send(
       `Your current Formula iRating: <b>${irating}</b><br><br>` +
       `Check Railway logs for full JSON responses.`
@@ -366,15 +328,17 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
     console.error("Error registering commands:", error);
   }
 })();
-
 client.login(DISCORD_TOKEN);
 
-const cron = require('cron');
+// ===============================
+// DAILY LEADERBOARD CRON JOB
+// ===============================
+const { CronJob } = require('cron');
 
 new CronJob(
-  '*/5 * * * *',  // noon CST
+  '*/5 * * * *',  // Every 5 minutes for testing
   async () => {
-    console.log('[CRON] Starting daily Formula iRating leaderboard @ noon CST');
+    console.log('[CRON] Starting daily Formula iRating leaderboard test (every 5 min)');
 
     let drivers = loadLinkedDrivers();
     if (drivers.length === 0) {
@@ -429,7 +393,7 @@ new CronJob(
 
     saveLinkedDrivers(updatedDrivers);
 
-    // Get channel by ID
+    // Get channel by ID from .env
     const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
 
     if (!channel || !channel.isTextBased()) {
@@ -438,7 +402,7 @@ new CronJob(
     }
 
     // Leaderboard message (top 20)
-    let leaderboardMsg = '**Daily Formula iRating Leaderboard** — Noon CST\n\n';
+    let leaderboardMsg = '**Daily Formula iRating Leaderboard** — Test (every 5 min)\n\n';
     updatedDrivers.slice(0, 20).forEach((d, i) => {
       const changeStr = d.lastChange
         ? (d.lastChange > 0 ? ` (+${d.lastChange})` : ` (${d.lastChange})`)
