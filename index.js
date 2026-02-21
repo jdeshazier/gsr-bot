@@ -38,53 +38,104 @@ if (
 }
 
 // ===============================
-// Persistent storage - with retry & raw logging
+// Persistent storage
 // ===============================
 const DATA_DIR = "/app/data";
 const LINKED_FILE = path.join(DATA_DIR, "linked-drivers.json");
 
-async function loadLinkedDrivers() {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      if (!fs.existsSync(DATA_DIR)) {
-        console.log("[STORAGE] Creating data dir (attempt " + attempt + ")");
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-      if (!fs.existsSync(LINKED_FILE)) {
-        console.log("[STORAGE] No file yet - returning empty (attempt " + attempt + ")");
-        return [];
-      }
-      const raw = fs.readFileSync(LINKED_FILE, "utf8");
-      console.log("[STORAGE] Raw file contents on load (attempt " + attempt + "):", raw);
-      const parsed = JSON.parse(raw);
-      console.log("[STORAGE] Loaded", parsed.length, "drivers (attempt " + attempt + ")");
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (err) {
-      console.error("[STORAGE] Load failed (attempt " + attempt + "):", err.message, err.stack);
-      if (attempt === 3) return [];
-      await new Promise(r => setTimeout(r, 2000)); // wait 2 sec before retry
-    }
-  }
-  return [];
-}
-
-async function saveLinkedDrivers(drivers) {
+function loadLinkedDrivers() {
   try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    const json = JSON.stringify(drivers, null, 2);
-    fs.writeFileSync(LINKED_FILE, json, "utf8");
-    // Extra delay for volume sync
-    await new Promise(r => setTimeout(r, 3000)); // 3 sec
-    console.log("[STORAGE] Raw saved contents:", json);
-    console.log(`[STORAGE] Saved ${drivers.length} drivers successfully`);
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (!fs.existsSync(LINKED_FILE)) return [];
+    const data = fs.readFileSync(LINKED_FILE, "utf8");
+    return JSON.parse(data);
   } catch (err) {
-    console.error("[STORAGE] Save failed:", err.message, err.stack);
+    console.error("Error loading linked-drivers:", err.message);
+    return [];
   }
 }
 
-// ... (maskSecret, getValidAccessToken, getCurrentIRating remain the same as your latest code)
+function saveLinkedDrivers(drivers) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(LINKED_FILE, JSON.stringify(drivers, null, 2), "utf8");
+    console.log(`Saved ${drivers.length} linked driver(s)`);
+  } catch (err) {
+    console.error("Error saving linked-drivers:", err.message);
+  }
+}
+
+// ===============================
+// iRacing secret masking
+// ===============================
+function maskSecret(secret, clientId) {
+  if (!secret || !clientId) throw new Error("Missing client secret or ID");
+  const normalizedId = clientId.trim().toLowerCase();
+  const input = secret + normalizedId;
+  const hash = crypto.createHash("sha256").update(input, "utf8").digest();
+  return hash.toString("base64");
+}
+
+// ===============================
+// Token refresh helper
+// ===============================
+async function getValidAccessToken(user) {
+  if (Date.now() < user.expiresAt - 60000) return user.accessToken;
+  console.log(`Refreshing token for Discord ID ${user.discordId}`);
+  const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: IRACING_CLIENT_ID,
+      client_secret: maskedSecret,
+      refresh_token: user.refreshToken
+    })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`Refresh failed: ${res.status} - ${errText}`);
+    throw new Error("Token refresh failed");
+  }
+  const data = await res.json();
+  user.accessToken = data.access_token;
+  user.refreshToken = data.refresh_token || user.refreshToken;
+  user.expiresAt = Date.now() + data.expires_in * 1000;
+  let drivers = loadLinkedDrivers();
+  const index = drivers.findIndex(d => d.discordId === user.discordId);
+  if (index !== -1) {
+    drivers[index] = user;
+    saveLinkedDrivers(drivers);
+  }
+  return user.accessToken;
+}
+
+// ===============================
+// Fetch Road iRating (category_id=5)
+// ===============================
+async function getCurrentIRating(user) {
+  const token = await getValidAccessToken(user);
+  const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+  const rootRes = await fetch(rootUrl, { headers: { Authorization: `Bearer ${token}` } });
+  if (!rootRes.ok) {
+    console.error(`Root chart fetch failed: ${rootRes.status}`);
+    return null;
+  }
+  const rootJson = await rootRes.json();
+  let chartUrl = rootUrl;
+  if (rootJson.link) chartUrl = rootJson.link;
+  const chartRes = await fetch(chartUrl);
+  if (!chartRes.ok) {
+    console.error(`Chart fetch failed: ${chartRes.status}`);
+    return null;
+  }
+  const chartJson = await chartRes.json();
+  if (chartJson.data && Array.isArray(chartJson.data) && chartJson.data.length > 0) {
+    return chartJson.data[chartJson.data.length - 1].value;
+  }
+  return null;
+}
 
 // ===============================
 // DISCORD + EXPRESS setup
@@ -101,9 +152,7 @@ app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-
   pkceStore.verifier = codeVerifier;
-
   const authUrl =
     `${AUTHORIZE_URL}?` +
     `response_type=code` +
@@ -112,12 +161,11 @@ app.get("/oauth/login", (req, res) => {
     `&scope=iracing.auth iracing.profile` +
     `&code_challenge=${codeChallenge}` +
     `&code_challenge_method=S256`;
-
   console.log("Redirecting to:", authUrl);
   res.redirect(authUrl);
 });
 
-// Callback - robust multi-driver append
+// Callback - fixed and robust
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
@@ -178,44 +226,23 @@ app.get("/oauth/callback", async (req, res) => {
 
     console.log("[LINK] Final saved name:", iracingName);
 
-    let drivers = await loadLinkedDrivers();
+    let drivers = loadLinkedDrivers();
     console.log(`[LINK] Loaded ${drivers.length} drivers before update`);
 
-    const existingIndex = drivers.findIndex(d => d.discordId === discordId);
-    if (existingIndex !== -1) {
-      console.log(`[LINK] Updating existing entry for ${discordId}`);
-      drivers[existingIndex] = {
-        ...drivers[existingIndex],
-        iracingName,
-        accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token,
-        expiresAt: Date.now() + tokenData.expires_in * 1000
-      };
-    } else {
-      console.log(`[LINK] Adding new driver ${discordId}`);
-      drivers.push({
-        discordId,
-        iracingName,
-        accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token,
-        expiresAt: Date.now() + tokenData.expires_in * 1000
-      });
-    }
+    drivers = drivers.filter(d => d.discordId !== discordId);
 
-    console.log(`[LINK] After update/push: ${drivers.length} drivers`);
+    drivers.push({
+      discordId,
+      iracingName,
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      expiresAt: Date.now() + tokenData.expires_in * 1000
+    });
 
-    // Extra delay + retry save
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        await saveLinkedDrivers(drivers);
-        console.log(`[LINK] Save succeeded on attempt ${attempt}`);
-        break;
-      } catch (err) {
-        console.error(`[LINK] Save attempt ${attempt} failed:`, err.message);
-        if (attempt === 3) break;
-        await new Promise(r => setTimeout(r, 3000));
-      }
-    }
+    console.log(`[LINK] After push: ${drivers.length} drivers`);
+
+    saveLinkedDrivers(drivers);
+    console.log(`[LINK] Saved successfully - now ${drivers.length} entries`);
 
     res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
   } catch (err) {
@@ -293,7 +320,7 @@ new CronJob(
   async () => {
     console.log('[CRON] Starting Road leaderboard test');
 
-    let drivers = await loadLinkedDrivers();
+    let drivers = loadLinkedDrivers();
     if (drivers.length === 0) {
       console.log('[CRON] No linked drivers — skipping');
       return;
@@ -301,7 +328,6 @@ new CronJob(
 
     console.log(`[CRON] Found ${drivers.length} linked drivers`);
 
-    // Update iRating for every driver
     for (const driver of drivers) {
       try {
         const irating = await getCurrentIRating(driver);
@@ -311,15 +337,12 @@ new CronJob(
           driver.lastIRating = irating;
           driver.lastChange = change;
           console.log(`[CRON] Updated ${driver.iracingName || driver.discordId}: ${irating} iR (change ${change})`);
-        } else {
-          console.log(`[CRON] No new iRating for ${driver.iracingName || driver.discordId} — using last known ${driver.lastIRating ?? '??'}`);
         }
       } catch (err) {
         console.error(`[CRON] Failed update for ${driver.discordId || 'unknown'}: ${err.message}`);
       }
     }
 
-    // Safe list for sorting
     const validDrivers = drivers.map(d => ({
       ...d,
       lastIRating: d.lastIRating ?? 0,
@@ -332,7 +355,6 @@ new CronJob(
     validDrivers.forEach((driver, idx) => {
       const newRank = idx + 1;
       const oldRank = driver.lastRank ?? Infinity;
-
       if (newRank < oldRank && oldRank !== Infinity) {
         const spots = oldRank - newRank;
         announcements.push(
@@ -340,12 +362,11 @@ new CronJob(
           `Now #${newRank} with ${driver.lastIRating} iR`
         );
       }
-
       const original = drivers.find(d => d.discordId === driver.discordId);
       if (original) original.lastRank = newRank;
     });
 
-    await saveLinkedDrivers(drivers);
+    saveLinkedDrivers(drivers);
 
     const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
     if (!channel || !channel.isTextBased()) {
@@ -356,16 +377,12 @@ new CronJob(
     let leaderboardMsg = '**Daily Road iRating Leaderboard** — Test (5 min)\n\n';
     const topDrivers = validDrivers.slice(0, 20);
 
-    if (topDrivers.length === 0) {
-      leaderboardMsg += "No drivers with iRating data yet.\n";
-    } else {
-      topDrivers.forEach((d, i) => {
-        const changeStr = d.lastChange
-          ? (d.lastChange > 0 ? ` (+${d.lastChange})` : ` (${d.lastChange})`)
-          : '';
-        leaderboardMsg += `${i + 1}. **${d.iracingName}** — ${d.lastIRating} iR${changeStr}\n`;
-      });
-    }
+    topDrivers.forEach((d, i) => {
+      const changeStr = d.lastChange
+        ? (d.lastChange > 0 ? ` (+${d.lastChange})` : ` (${d.lastChange})`)
+        : '';
+      leaderboardMsg += `${i + 1}. **${d.iracingName}** — ${d.lastIRating} iR${changeStr}\n`;
+    });
 
     await channel.send(leaderboardMsg).catch(err => console.error('[CRON] Send leaderboard failed:', err));
 
