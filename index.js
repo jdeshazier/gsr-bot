@@ -151,30 +151,39 @@ async function getCurrentIRating(user) {
 // ===============================
 async function fetchNameFromCustId(custId) {
   try {
-    // Using iracingstats.com as example — change URL if you prefer another site
-    const url = `https://www.iracingstats.com/member/${custId}`;
+    const url = `https://members.iracing.com/membersite/member/StatsViewer.do?custid=${custId}`;
     const res = await fetch(url);
-    if (!res.ok) return "Unknown";
+    if (!res.ok) {
+      console.error(`[NAME FETCH] StatsViewer failed for ${custId}: ${res.status}`);
+      return "Unknown";
+    }
 
     const text = await res.text();
 
-    // Look for common name patterns in HTML (this is fragile — adjust regex if needed)
-    const nameMatch =
-      text.match(/<h1[^>]*>([^<]+)<\/h1>/i) ||
-      text.match(/Name:\s*([^<]+)/i) ||
-      text.match(/([A-Z][a-z]+ [A-Z])\b/); // fallback for "Jesse D"
+    // Parse name from page title (common: "First Last Stats" or "First Last - Stats")
+    let nameMatch = text.match(/<title>([^<]+) Stats?<\/title>/i);
+    if (!nameMatch) {
+      // Fallback: look for h1 or meta
+      nameMatch = text.match(/<h1[^>]*>([^<]+)<\/h1>/i) || text.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+    }
 
     if (nameMatch && nameMatch[1]) {
-      const fullName = nameMatch[1].trim();
+      let fullName = nameMatch[1].trim().replace(/\s*-\s*Stats?/i, '').trim();
       const parts = fullName.split(/\s+/);
       if (parts.length >= 2) {
-        return `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.`;
+        const first = parts[0];
+        const lastInitial = parts[parts.length - 1][0].toUpperCase();
+        const name = `${first} ${lastInitial}.`;
+        console.log(`[NAME FETCH] Parsed "${name}" from ${custId}`);
+        return name;
       }
       return fullName;
     }
+
+    console.warn(`[NAME FETCH] No name found in page for ${custId}`);
     return "Unknown";
   } catch (err) {
-    console.error(`Name fetch failed for cust_id ${custId}: ${err.message}`);
+    console.error(`[NAME FETCH] Error for ${custId}: ${err.message}`);
     return "Unknown";
   }
 }
@@ -382,10 +391,13 @@ new CronJob(
         // Fetch name if missing
         if (!driver.iracingName || driver.iracingName === "Unknown") {
           if (driver.custId) {
-            const name = await fetchNameFromCustId(driver.custId);
-            if (name !== "Unknown") {
-              driver.iracingName = name;
-              console.log(`[CRON] Set name for ${driver.discordId}: ${name}`);
+  console.log(`[CRON] Attempting to fetch name for cust_id ${driver.custId}`);
+  const name = await fetchNameFromCustId(driver.custId);
+  if (name !== "Unknown") {
+    driver.iracingName = name;
+    console.log(`[CRON] Successfully set name: ${name}`);
+  } else {
+    console.log(`[CRON] Name fetch returned Unknown for ${driver.custId}`);
             }
           }
         }
