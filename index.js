@@ -184,7 +184,7 @@ app.get("/oauth/login", (req, res) => {
 });
 
 // --------------------------------
-// CALLBACK ROUTE - Link + save first name + last initial
+// CALLBACK ROUTE - Link + fetch name from full chart JSON
 // --------------------------------
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
@@ -220,18 +220,31 @@ app.get("/oauth/callback", async (req, res) => {
     // Get Discord ID
     const discordId = req.query.state || "unknown";
 
-    // Fetch chart_data to get name (Road/Sports Car category)
-    const chartUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
-    const chartRes = await fetch(chartUrl, {
+    // Step 1: Get root chart_data (presigned link)
+    const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+    const rootRes = await fetch(rootUrl, {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
+    if (!rootRes.ok) {
+      console.error("[LINK] Root chart fetch failed:", rootRes.status);
+    }
+    const rootJson = await rootRes.json();
+    console.log("[LINK] Root chart_data response:", JSON.stringify(rootJson, null, 2));
 
+    let chartUrl = rootUrl;
+    if (rootJson.link) {
+      chartUrl = rootJson.link;
+      console.log("[LINK] Following chart link for full data:", chartUrl);
+    }
+
+    // Step 2: Fetch the actual chart JSON (contains name and data array)
+    const chartRes = await fetch(chartUrl);
     let iracingName = "Unknown";
     if (chartRes.ok) {
       const chartJson = await chartRes.json();
-      console.log("[LINK] Full chart_data response during linking:", JSON.stringify(chartJson, null, 2));
+      console.log("[LINK] Full chart JSON after following link:", JSON.stringify(chartJson, null, 2));
 
-      // Try to get name from root response
+      // Extract name from full chart response
       if (chartJson.name && typeof chartJson.name === 'string' && chartJson.name.trim() !== '') {
         const nameParts = chartJson.name.trim().split(/\s+/);
         if (nameParts.length >= 2) {
@@ -242,10 +255,10 @@ app.get("/oauth/callback", async (req, res) => {
           iracingName = chartJson.name.trim();
         }
       } else {
-        console.warn("[LINK] No 'name' field in chart_data response during linking");
+        console.warn("[LINK] No 'name' field in full chart JSON");
       }
     } else {
-      console.error("[LINK] chart_data fetch failed during linking:", chartRes.status);
+      console.error("[LINK] Full chart fetch failed:", chartRes.status);
     }
 
     // Save with name
@@ -253,7 +266,7 @@ app.get("/oauth/callback", async (req, res) => {
     drivers = drivers.filter(d => d.discordId !== discordId);
     drivers.push({
       discordId,
-      iracingName,  // "First L." or "Unknown"
+      iracingName,  // Now "First L." or fallback
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt: Date.now() + tokenData.expires_in * 1000
