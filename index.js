@@ -368,3 +368,98 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 })();
 
 client.login(DISCORD_TOKEN);
+
+const cron = require('node-cron');
+
+// Daily leaderboard at 12:00 noon CST
+cron.schedule('0 12 * * *', async () => {
+  console.log('[CRON] Starting daily Formula iRating leaderboard @ noon CST');
+
+  let drivers = loadLinkedDrivers();
+  if (drivers.length === 0) {
+    console.log('[CRON] No linked drivers — skipping');
+    return;
+  }
+
+  let updatedDrivers = [];
+
+  for (const driver of drivers) {
+    try {
+      const irating = await getCurrentIRating(driver);
+
+      if (irating !== null) {
+        const oldIRating = driver.lastIRating ?? irating;
+        const change = irating - oldIRating;
+
+        driver.lastIRating = irating;
+        driver.lastChange = change;
+
+        updatedDrivers.push(driver);
+      }
+    } catch (err) {
+      console.error(`[CRON] Failed to update driver ${driver.discordId}: ${err.message}`);
+    }
+  }
+
+  if (updatedDrivers.length === 0) {
+    console.log('[CRON] No valid iRating updates — skipping post');
+    return;
+  }
+
+  // Sort: highest iRating first
+  updatedDrivers.sort((a, b) => b.lastIRating - a.lastIRating);
+
+  // Calculate new ranks and detect gains
+  const announcements = [];
+  updatedDrivers.forEach((driver, idx) => {
+    const newRank = idx + 1;
+    const oldRank = driver.lastRank ?? Infinity;
+
+    if (newRank < oldRank && oldRank !== Infinity) {
+      const spots = oldRank - newRank;
+      announcements.push(
+        `**${driver.iracingName || 'Driver'}** gained ${spots} spot${spots === 1 ? '' : 's'}! ` +
+        `Now #${newRank} with ${driver.lastIRating} iR`
+      );
+    }
+
+    driver.lastRank = newRank;
+  });
+
+  // Save updated info back to file
+  saveLinkedDrivers(updatedDrivers);
+
+  // Find the Leaderboard channel
+  const channel = client.channels.cache.find(
+    ch => ch.name.toLowerCase() === 'leaderboard' && ch.isTextBased()
+  );
+
+  if (!channel) {
+    console.error('[CRON] Channel named "Leaderboard" not found in cache');
+    return;
+  }
+
+  // Leaderboard message (top 20)
+  let leaderboardMsg = '**Daily Formula iRating Leaderboard** — Noon CST\n\n';
+  updatedDrivers.slice(0, 20).forEach((d, i) => {
+    const changeStr = d.lastChange
+      ? (d.lastChange > 0 ? ` (+${d.lastChange})` : ` (${d.lastChange})`)
+      : '';
+    leaderboardMsg += `${i + 1}. **${d.iracingName || 'Unknown'}** — ${d.lastIRating} iR${changeStr}\n`;
+  });
+
+  await channel.send(leaderboardMsg).catch(err => {
+    console.error('[CRON] Failed to send leaderboard message:', err);
+  });
+
+  // Send gains/announcements if any
+  if (announcements.length > 0) {
+    await channel.send(announcements.join('\n')).catch(err => {
+      console.error('[CRON] Failed to send announcements:', err);
+    });
+  }
+
+  console.log('[CRON] Leaderboard posted successfully');
+}, {
+  timezone: "America/Chicago"
+});
