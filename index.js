@@ -373,7 +373,7 @@ const { CronJob } = require('cron');
 
 // Daily at noon CST (America/Chicago)
 new CronJob(
-  '0 12 * * *',                    // cron pattern
+  '*/5 * * * *',                    // cron pattern
   async () => {
     console.log('[CRON] Starting daily Formula iRating leaderboard @ noon CST');
 
