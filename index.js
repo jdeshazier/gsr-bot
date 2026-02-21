@@ -369,11 +369,10 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
 client.login(DISCORD_TOKEN);
 
-const { CronJob } = require('cron');
+const cron = require('cron');
 
-// Daily at noon CST (America/Chicago)
 new CronJob(
-  '*/5 * * * *',                    // cron pattern
+  '*/5 * * * *',  // noon CST
   async () => {
     console.log('[CRON] Starting daily Formula iRating leaderboard @ noon CST');
 
@@ -408,10 +407,10 @@ new CronJob(
       return;
     }
 
-    // Sort: highest first
+    // Sort highest to lowest
     updatedDrivers.sort((a, b) => b.lastIRating - a.lastIRating);
 
-    // Calculate ranks and detect gains
+    // Calculate ranks & gains
     const announcements = [];
     updatedDrivers.forEach((driver, idx) => {
       const newRank = idx + 1;
@@ -430,15 +429,15 @@ new CronJob(
 
     saveLinkedDrivers(updatedDrivers);
 
-    const channel = client.channels.cache.find(
-      ch => ch.name.toLowerCase() === 'leaderboard' && ch.isTextBased()
-    );
+    // Get channel by ID
+    const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
 
-    if (!channel) {
-      console.error('[CRON] Channel "Leaderboard" not found');
+    if (!channel || !channel.isTextBased()) {
+      console.error(`[CRON] Channel ID ${ANNOUNCE_CHANNEL_ID} not found or not text-based`);
       return;
     }
 
+    // Leaderboard message (top 20)
     let leaderboardMsg = '**Daily Formula iRating Leaderboard** — Noon CST\n\n';
     updatedDrivers.slice(0, 20).forEach((d, i) => {
       const changeStr = d.lastChange
@@ -447,15 +446,20 @@ new CronJob(
       leaderboardMsg += `${i + 1}. **${d.iracingName || 'Unknown'}** — ${d.lastIRating} iR${changeStr}\n`;
     });
 
-    await channel.send(leaderboardMsg).catch(err => console.error('Send leaderboard failed:', err));
+    await channel.send(leaderboardMsg).catch(err => {
+      console.error('[CRON] Failed to send leaderboard:', err);
+    });
 
+    // Announcements if any gains
     if (announcements.length > 0) {
-      await channel.send(announcements.join('\n')).catch(err => console.error('Send announcements failed:', err));
+      await channel.send(announcements.join('\n')).catch(err => {
+        console.error('[CRON] Failed to send announcements:', err);
+      });
     }
 
-    console.log('[CRON] Leaderboard posted successfully');
+    console.log('[CRON] Leaderboard posted to channel ' + ANNOUNCE_CHANNEL_ID);
   },
-  null,                            // onComplete (optional)
-  true,                            // start immediately
-  'America/Chicago'                // timezone
+  null,
+  true,
+  'America/Chicago'
 );
