@@ -261,13 +261,36 @@ app.get("/test-irating", async (req, res) => {
   try {
     const drivers = loadLinkedDrivers();
     if (drivers.length === 0) {
-      return res.send("No linked drivers yet.");
+      return res.send("No linked drivers yet. Link one first!");
     }
-    const user = drivers[0];  // test with first linked (you)
-    const irating = await getCurrentIRating(user);
-    res.send(`Your current Sports Car iRating: ${irating || "Not found"}`);
+
+    const user = drivers[0]; // Your account
+    const token = await getValidAccessToken(user);
+
+    const url = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
+
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    const json = await response.json(); // Parse even on non-OK
+
+    console.log("Full chart_data JSON response:", JSON.stringify(json, null, 2));
+
+    let message = "Test result:<br>";
+    if (!response.ok) {
+      message += `API returned ${response.status}: ${await response.text()}`;
+    } else if (json.data && Array.isArray(json.data) && json.data.length > 0) {
+      const latest = json.data[json.data.length - 1];
+      message += `Your current Sports Car iRating: <b>${latest.value}</b> (from ${latest.when})`;
+    } else {
+      message += "No iRating chart data available (empty or missing 'data' array). Raw response logged in Railway logs.";
+    }
+
+    res.send(message + "<br><br>Check Railway logs for 'Full chart_data JSON response'.");
   } catch (err) {
-    res.status(500).send(`Error: ${err.message}`);
+    console.error("Test error:", err.message);
+    res.status(500).send("Error: " + err.message);
   }
 });
 
