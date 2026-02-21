@@ -114,7 +114,6 @@ const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 let pkceStore = {};
 
-// Login & Callback (unchanged)
 app.get("/oauth/login", (req, res) => {
   const codeVerifier = crypto.randomBytes(32).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
@@ -152,7 +151,9 @@ app.get("/oauth/callback", async (req, res) => {
     const discordId = req.query.state || "unknown";
 
     const profileUrl = "https://oauth.iracing.com/oauth2/iracing/profile";
-    const profileRes = await fetch(profileUrl, { headers: { Authorization: `Bearer ${tokenData.access_token}` } });
+    const profileRes = await fetch(profileUrl, {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
 
     let iracingName = "Unknown";
     if (profileRes.ok) {
@@ -189,7 +190,7 @@ app.get("/oauth/callback", async (req, res) => {
 app.get("/", (req, res) => res.send("🏁 GSR Bot OAuth Server is running."));
 app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`));
 
-// ====================== DISCORD COMMANDS ======================
+// ====================== DISCORD ======================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once("ready", () => console.log("✅ Bot logged in!"));
@@ -205,21 +206,18 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: `🔗 Link iRacing: ${loginUrl}`, ephemeral: true });
   }
 
-  // Self unlink
   if (interaction.commandName === "unlinkme") {
     let drivers = loadLinkedDrivers();
     const initial = drivers.length;
     drivers = drivers.filter(d => d.discordId !== interaction.user.id);
-
     if (drivers.length < initial) {
       saveLinkedDrivers(drivers);
-      return interaction.reply({ content: "✅ You have been unlinked from the leaderboard.", ephemeral: true });
+      return interaction.reply({ content: "✅ You have been unlinked.", ephemeral: true });
     } else {
       return interaction.reply({ content: "You were not linked.", ephemeral: true });
     }
   }
 
-  // Admin unlink
   if (interaction.commandName === "unlink") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Only administrators can use this command.", ephemeral: true });
@@ -230,7 +228,6 @@ client.on("interactionCreate", async interaction => {
     let drivers = loadLinkedDrivers();
     const initial = drivers.length;
     drivers = drivers.filter(d => d.discordId !== target.id);
-
     if (drivers.length < initial) {
       saveLinkedDrivers(drivers);
       return interaction.reply(`✅ Successfully unlinked **${target.tag}**.`);
@@ -239,20 +236,17 @@ client.on("interactionCreate", async interaction => {
     }
   }
 
-  // Leaderboard
   if (interaction.commandName === "leaderboard") {
     await showLeaderboard(interaction);
   }
 });
 
-// Reusable beautiful leaderboard function
 async function showLeaderboard(interactionOrChannel) {
   let drivers = loadLinkedDrivers();
   if (drivers.length === 0) {
     return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
   }
 
-  // Update iRatings quickly
   for (const driver of drivers) {
     try {
       const ir = await getCurrentIRating(driver);
@@ -278,9 +272,7 @@ async function showLeaderboard(interactionOrChannel) {
 
   drivers.slice(0, 20).forEach((d, i) => {
     let change = "";
-    if (d.lastChange) {
-      change = d.lastChange > 0 ? ` **(+${d.lastChange})** ⬆️` : ` **(${d.lastChange})** ⬇️`;
-    }
+    if (d.lastChange) change = d.lastChange > 0 ? ` **(+${d.lastChange})** ⬆️` : ` **(${d.lastChange})** ⬇️`;
     embed.addFields({
       name: `${rankEmojis[i]} ${d.iracingName || "Unknown"}`,
       value: `${d.lastIRating ?? "??"} iR${change}`,
