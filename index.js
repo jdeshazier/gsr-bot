@@ -13,7 +13,9 @@ const fetch = require("node-fetch");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { createCanvas } = require("@napi-rs/canvas"); // ← swapped from 'canvas'
+const https = require("https");
+const os = require("os");
+const { createCanvas, GlobalFonts } = require("@napi-rs/canvas");
 
 // ====================== ENV ======================
 const {
@@ -30,6 +32,41 @@ if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
     !IRACING_CLIENT_SECRET || !IRACING_REDIRECT_URI || !ANNOUNCE_CHANNEL_ID) {
   console.error("❌ Missing required environment variables.");
   process.exit(1);
+}
+
+// ====================== FONT ======================
+async function registerFont() {
+  const fontPath = path.join(os.tmpdir(), "inter.ttf");
+  if (!fs.existsSync(fontPath)) {
+    console.log("Downloading Inter font...");
+    await new Promise((resolve, reject) => {
+      const file = fs.createWriteStream(fontPath);
+      https.get(
+        "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Regular.ttf",
+        res => {
+          res.pipe(file);
+          file.on("finish", () => { file.close(); resolve(); });
+        }
+      ).on("error", reject);
+    });
+  }
+  GlobalFonts.registerFromPath(fontPath, "Inter");
+
+  const boldPath = path.join(os.tmpdir(), "inter-bold.ttf");
+  if (!fs.existsSync(boldPath)) {
+    console.log("Downloading Inter Bold font...");
+    await new Promise((resolve, reject) => {
+      const file = fs.createWriteStream(boldPath);
+      https.get(
+        "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Bold.ttf",
+        res => {
+          res.pipe(file);
+          file.on("finish", () => { file.close(); resolve(); });
+        }
+      ).on("error", reject);
+    });
+  }
+  GlobalFonts.registerFromPath(boldPath, "InterBold");
 }
 
 // ====================== STORAGE ======================
@@ -110,7 +147,6 @@ async function getCurrentIRating(user) {
   return null;
 }
 
-// Fetch a signed iRacing data URL and follow the link to get the actual JSON
 async function fetchIRacingData(token, url) {
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) return null;
@@ -127,34 +163,25 @@ async function fetchIRacingData(token, url) {
 async function fetchDriverStats(user) {
   const token = await getValidAccessToken(user);
 
-  // Career stats (category_id 5 = Sports Car)
   const careerData = await fetchIRacingData(
     token,
     "https://members-ng.iracing.com/data/stats/member_career"
   );
-
-  // Recent results for current season stats
   const recentData = await fetchIRacingData(
     token,
     "https://members-ng.iracing.com/data/results/member_recent_races"
   );
-
-  // iR chart for change calculation (Sports Car = category 5)
   const irChartData = await fetchIRacingData(
     token,
     "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"
   );
-
-  // SR chart for change calculation (Sports Car = category 5)
   const srChartData = await fetchIRacingData(
     token,
     "https://members-ng.iracing.com/data/member/chart_data?chart_type=2&category_id=5"
   );
 
-  // Pull Sports Car career stats row
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
 
-  // iR change: last two data points
   let irChange = 0;
   let currentIR = user.lastIRating ?? 0;
   if (irChartData?.data?.length >= 2) {
@@ -163,7 +190,6 @@ async function fetchDriverStats(user) {
     irChange = pts[pts.length - 1].value - pts[pts.length - 2].value;
   }
 
-  // SR change: last two data points
   let srChange = 0;
   let currentSR = 0;
   if (srChartData?.data?.length >= 2) {
@@ -172,7 +198,6 @@ async function fetchDriverStats(user) {
     srChange = (pts[pts.length - 1].value - pts[pts.length - 2].value) / 100;
   }
 
-  // Current season stats: filter recent races to Sports Car (category 5)
   const seasonRaces = (recentData?.races || []).filter(r => r.category_id === 5);
   const seasonStarts = seasonRaces.length;
   const seasonWins = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
@@ -190,7 +215,6 @@ async function fetchDriverStats(user) {
     ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts)
     : "N/A";
 
-  // iR percentile: approximate bucket based on iRating value
   let irPercentile = null;
   if (currentIR > 0) {
     if (currentIR >= 6000) irPercentile = 99;
@@ -274,27 +298,27 @@ function renderStatsCard(stats) {
   roundRect(ctx, 18, 18, 72, 44, 8);
   ctx.fill();
   ctx.fillStyle = "#fff";
-  ctx.font = "bold 11px sans-serif";
+  ctx.font = "11px Inter";
   ctx.textAlign = "center";
   ctx.fillText(stats.srClass + " " + stats.currentSR, 54, 36);
-  ctx.font = "bold 13px sans-serif";
+  ctx.font = "13px InterBold";
   ctx.fillText(stats.currentIR.toLocaleString(), 54, 54);
 
   // Driver name
   ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 28px sans-serif";
+  ctx.font = "28px InterBold";
   ctx.textAlign = "center";
   ctx.fillText(stats.name, W / 2, 42);
 
   // Subtitle
   ctx.fillStyle = "#a0aec0";
-  ctx.font = "14px sans-serif";
+  ctx.font = "14px Inter";
   ctx.fillText("Sports Car · 2026 Season 1", W / 2, 64);
 
   // iR Percentile (top right)
   if (stats.irPercentile !== null) {
     ctx.fillStyle = "#a0aec0";
-    ctx.font = "12px sans-serif";
+    ctx.font = "12px Inter";
     ctx.textAlign = "right";
     ctx.fillText(`top ${100 - stats.irPercentile + 1}% of Sports Car drivers`, W - 18, 36);
   }
@@ -310,7 +334,7 @@ function renderStatsCard(stats) {
 
   // ── Section Labels ──
   ctx.fillStyle = "#6366f1";
-  ctx.font = "bold 12px sans-serif";
+  ctx.font = "12px InterBold";
   ctx.textAlign = "left";
   ctx.fillText("CURRENT SEASON", 30, 105);
 
@@ -318,9 +342,8 @@ function renderStatsCard(stats) {
   ctx.textAlign = "right";
   ctx.fillText("CAREER", W - 30, 105);
 
-  // Center divider label
   ctx.fillStyle = "#4a5568";
-  ctx.font = "11px sans-serif";
+  ctx.font = "11px Inter";
   ctx.textAlign = "center";
   ctx.fillText("STAT", W / 2, 105);
 
@@ -334,15 +357,15 @@ function renderStatsCard(stats) {
 
   // ── Stats Grid ──
   const rows = [
-    { label: "Starts",      season: stats.season.starts,                                  career: stats.career.starts },
-    { label: "Wins",        season: `${stats.season.wins} (${stats.season.winPct}%)`,     career: `${stats.career.wins} (${stats.career.winPct}%)` },
+    { label: "Starts",      season: stats.season.starts,                                    career: stats.career.starts },
+    { label: "Wins",        season: `${stats.season.wins} (${stats.season.winPct}%)`,       career: `${stats.career.wins} (${stats.career.winPct}%)` },
     { label: "Podiums",     season: `${stats.season.podiums} (${stats.season.podiumPct}%)`, career: `${stats.career.top5} (${stats.career.podiumPct}%)` },
-    { label: "Poles",       season: `${stats.season.poles} (${stats.season.polePct}%)`,   career: `${stats.career.poles} (${stats.career.polePct}%)` },
-    { label: "Total Laps",  season: stats.season.laps,                                    career: stats.career.laps },
-    { label: "Laps Led",    season: stats.season.lapsLed,                                 career: stats.career.lapsLed },
-    { label: "Avg Start",   season: stats.season.avgStart,                                career: stats.career.avgStart },
-    { label: "Avg Finish",  season: stats.season.avgFinish,                               career: stats.career.avgFinish },
-    { label: "Avg Points",  season: stats.season.avgPoints,                               career: stats.career.avgPoints },
+    { label: "Poles",       season: `${stats.season.poles} (${stats.season.polePct}%)`,     career: `${stats.career.poles} (${stats.career.polePct}%)` },
+    { label: "Total Laps",  season: stats.season.laps,                                      career: stats.career.laps },
+    { label: "Laps Led",    season: stats.season.lapsLed,                                   career: stats.career.lapsLed },
+    { label: "Avg Start",   season: stats.season.avgStart,                                  career: stats.career.avgStart },
+    { label: "Avg Finish",  season: stats.season.avgFinish,                                 career: stats.career.avgFinish },
+    { label: "Avg Points",  season: stats.season.avgPoints,                                 career: stats.career.avgPoints },
   ];
 
   const rowH = 34;
@@ -352,7 +375,6 @@ function renderStatsCard(stats) {
     const y = startY + i * rowH;
     const isEven = i % 2 === 0;
 
-    // Alternating row background
     if (isEven) {
       ctx.fillStyle = "rgba(255,255,255,0.03)";
       roundRect(ctx, 18, y - 2, W - 36, rowH - 2, 6);
@@ -361,13 +383,13 @@ function renderStatsCard(stats) {
 
     // Label (center)
     ctx.fillStyle = "#a0aec0";
-    ctx.font = "13px sans-serif";
+    ctx.font = "13px Inter";
     ctx.textAlign = "center";
     ctx.fillText(row.label, W / 2, y + 18);
 
     // Season value (left)
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 15px sans-serif";
+    ctx.font = "15px InterBold";
     ctx.textAlign = "left";
     ctx.fillText(String(row.season), 36, y + 19);
 
@@ -380,7 +402,7 @@ function renderStatsCard(stats) {
   ctx.fillStyle = "#2d3748";
   ctx.fillRect(0, H - 28, W, 28);
   ctx.fillStyle = "#718096";
-  ctx.font = "11px sans-serif";
+  ctx.font = "11px Inter";
   ctx.textAlign = "center";
   ctx.fillText("GSR · iRacing Sports Car Stats · Data via iRacing Members API", W / 2, H - 10);
 
@@ -405,7 +427,7 @@ function roundRect(ctx, x, y, w, h, r) {
 
 function drawPill(ctx, x, y, text, color, align = "left") {
   const padding = 10;
-  ctx.font = "bold 12px sans-serif";
+  ctx.font = "12px InterBold";
   const tw = ctx.measureText(text).width;
   const pw = tw + padding * 2;
   const px = align === "right" ? x - pw : x;
@@ -727,7 +749,17 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
   }
 })();
 
-client.login(DISCORD_TOKEN);
+// ====================== STARTUP ======================
+// Register fonts first, then log in
+registerFont()
+  .then(() => {
+    console.log("✅ Fonts registered.");
+    client.login(DISCORD_TOKEN);
+  })
+  .catch(err => {
+    console.error("⚠️ Font registration failed, continuing anyway:", err.message);
+    client.login(DISCORD_TOKEN);
+  });
 
 // ====================== CRON ======================
 const { CronJob } = require("cron");
