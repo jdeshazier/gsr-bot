@@ -13,8 +13,8 @@ const fetch = require("node-fetch");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const https = require("https");
 const os = require("os");
+const https = require("https");
 const { createCanvas, GlobalFonts } = require("@napi-rs/canvas");
 
 // ====================== ENV ======================
@@ -34,39 +34,67 @@ if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
   process.exit(1);
 }
 
-// ====================== FONT ======================
-async function registerFont() {
-  const fontPath = path.join(os.tmpdir(), "inter.ttf");
-  if (!fs.existsSync(fontPath)) {
-    console.log("Downloading Inter font...");
-    await new Promise((resolve, reject) => {
-      const file = fs.createWriteStream(fontPath);
-      https.get(
-        "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Regular.ttf",
-        res => {
-          res.pipe(file);
-          file.on("finish", () => { file.close(); resolve(); });
-        }
-      ).on("error", reject);
-    });
-  }
-  GlobalFonts.registerFromPath(fontPath, "Inter");
+// ====================== FONT REGISTRATION ======================
+// Try system fonts first (available on Railway), fall back to downloading
+const SYSTEM_FONT_PATHS = [
+  // Railway / Debian system Poppins
+  { regular: "/usr/share/fonts/truetype/google-fonts/Poppins-Regular.ttf",
+    bold:    "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
+    name:    "Poppins" },
+  // DejaVu Sans — virtually always present on Linux
+  { regular: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    bold:    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    name:    "DejaVu Sans" },
+];
 
-  const boldPath = path.join(os.tmpdir(), "inter-bold.ttf");
-  if (!fs.existsSync(boldPath)) {
-    console.log("Downloading Inter Bold font...");
-    await new Promise((resolve, reject) => {
-      const file = fs.createWriteStream(boldPath);
-      https.get(
-        "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Bold.ttf",
-        res => {
-          res.pipe(file);
-          file.on("finish", () => { file.close(); resolve(); });
-        }
-      ).on("error", reject);
-    });
+let FONT_NAME = "Poppins"; // updated after registration
+
+function registerFont() {
+  for (const entry of SYSTEM_FONT_PATHS) {
+    if (fs.existsSync(entry.regular) && fs.existsSync(entry.bold)) {
+      try {
+        GlobalFonts.registerFromPath(entry.regular, entry.name);
+        GlobalFonts.registerFromPath(entry.bold, entry.name);
+        FONT_NAME = entry.name;
+        console.log(`✅ Fonts registered: ${entry.name}`);
+        return;
+      } catch (e) {
+        console.warn(`Font registration failed for ${entry.name}:`, e.message);
+      }
+    }
   }
-  GlobalFonts.registerFromPath(boldPath, "InterBold");
+  // Last resort: download Inter
+  console.log("No system fonts found — downloading Inter as fallback...");
+  downloadAndRegisterInter();
+}
+
+function downloadAndRegisterInter() {
+  const regularPath = path.join(os.tmpdir(), "inter-regular.ttf");
+  const boldPath    = path.join(os.tmpdir(), "inter-bold.ttf");
+
+  const downloads = [
+    { url: "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Regular.ttf", dest: regularPath },
+    { url: "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Bold.ttf",    dest: boldPath },
+  ];
+
+  let completed = 0;
+  for (const dl of downloads) {
+    if (fs.existsSync(dl.dest)) { completed++; continue; }
+    const file = fs.createWriteStream(dl.dest);
+    https.get(dl.url, res => {
+      res.pipe(file);
+      file.on("finish", () => {
+        file.close();
+        completed++;
+        if (completed === downloads.length) {
+          GlobalFonts.registerFromPath(regularPath, "Inter");
+          GlobalFonts.registerFromPath(boldPath,    "Inter");
+          FONT_NAME = "Inter";
+          console.log("✅ Inter fonts downloaded and registered.");
+        }
+      });
+    }).on("error", err => console.error("Font download error:", err.message));
+  }
 }
 
 // ====================== STORAGE ======================
@@ -163,22 +191,10 @@ async function fetchIRacingData(token, url) {
 async function fetchDriverStats(user) {
   const token = await getValidAccessToken(user);
 
-  const careerData = await fetchIRacingData(
-    token,
-    "https://members-ng.iracing.com/data/stats/member_career"
-  );
-  const recentData = await fetchIRacingData(
-    token,
-    "https://members-ng.iracing.com/data/results/member_recent_races"
-  );
-  const irChartData = await fetchIRacingData(
-    token,
-    "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"
-  );
-  const srChartData = await fetchIRacingData(
-    token,
-    "https://members-ng.iracing.com/data/member/chart_data?chart_type=2&category_id=5"
-  );
+  const careerData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career");
+  const recentData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/results/member_recent_races");
+  const irChartData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5");
+  const srChartData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=2&category_id=5");
 
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
 
@@ -206,18 +222,15 @@ async function fetchDriverStats(user) {
   const seasonLaps = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
   const seasonLapsLed = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
   const seasonAvgStart = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.starting_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2)
-    : "N/A";
+    ? (seasonRaces.reduce((a, r) => a + (r.starting_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
   const seasonAvgFinish = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.finish_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2)
-    : "N/A";
+    ? (seasonRaces.reduce((a, r) => a + (r.finish_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
   const seasonAvgPoints = seasonStarts > 0
-    ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts)
-    : "N/A";
+    ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts) : "N/A";
 
   let irPercentile = null;
   if (currentIR > 0) {
-    if (currentIR >= 6000) irPercentile = 99;
+    if      (currentIR >= 6000) irPercentile = 99;
     else if (currentIR >= 5000) irPercentile = 98;
     else if (currentIR >= 4500) irPercentile = 97;
     else if (currentIR >= 4000) irPercentile = 96;
@@ -227,7 +240,7 @@ async function fetchDriverStats(user) {
     else if (currentIR >= 2000) irPercentile = 65;
     else if (currentIR >= 1500) irPercentile = 50;
     else if (currentIR >= 1000) irPercentile = 30;
-    else irPercentile = 15;
+    else                        irPercentile = 15;
   }
 
   const srClass = currentSR >= 4.0 ? "A" : currentSR >= 3.0 ? "B" : currentSR >= 2.0 ? "C" : currentSR >= 1.0 ? "D" : "R";
@@ -241,32 +254,32 @@ async function fetchDriverStats(user) {
     srClass,
     srChange: srChange.toFixed(2),
     career: {
-      starts: sportsCar.starts ?? 0,
-      wins: sportsCar.wins ?? 0,
-      top5: sportsCar.top5 ?? 0,
-      poles: sportsCar.poles ?? 0,
-      laps: sportsCar.laps_complete ?? 0,
-      lapsLed: sportsCar.laps_led ?? 0,
-      avgStart: sportsCar.avg_start_position?.toFixed(2) ?? "N/A",
+      starts:    sportsCar.starts ?? 0,
+      wins:      sportsCar.wins ?? 0,
+      top5:      sportsCar.top5 ?? 0,
+      poles:     sportsCar.poles ?? 0,
+      laps:      sportsCar.laps_complete ?? 0,
+      lapsLed:   sportsCar.laps_led ?? 0,
+      avgStart:  sportsCar.avg_start_position?.toFixed(2) ?? "N/A",
       avgFinish: sportsCar.avg_finish_position?.toFixed(2) ?? "N/A",
       avgPoints: sportsCar.avg_champ_points ? Math.round(sportsCar.avg_champ_points) : "N/A",
-      winPct: sportsCar.starts > 0 ? Math.round((sportsCar.wins / sportsCar.starts) * 100) : 0,
+      winPct:    sportsCar.starts > 0 ? Math.round((sportsCar.wins / sportsCar.starts) * 100) : 0,
       podiumPct: sportsCar.starts > 0 ? Math.round(((sportsCar.top5 ?? 0) / sportsCar.starts) * 100) : 0,
-      polePct: sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
+      polePct:   sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
     },
     season: {
-      starts: seasonStarts,
-      wins: seasonWins,
-      podiums: seasonPodiums,
-      poles: seasonPoles,
-      laps: seasonLaps,
-      lapsLed: seasonLapsLed,
-      avgStart: seasonAvgStart,
+      starts:    seasonStarts,
+      wins:      seasonWins,
+      podiums:   seasonPodiums,
+      poles:     seasonPoles,
+      laps:      seasonLaps,
+      lapsLed:   seasonLapsLed,
+      avgStart:  seasonAvgStart,
       avgFinish: seasonAvgFinish,
       avgPoints: seasonAvgPoints,
-      winPct: seasonStarts > 0 ? Math.round((seasonWins / seasonStarts) * 100) : 0,
+      winPct:    seasonStarts > 0 ? Math.round((seasonWins    / seasonStarts) * 100) : 0,
       podiumPct: seasonStarts > 0 ? Math.round((seasonPodiums / seasonStarts) * 100) : 0,
-      polePct: seasonStarts > 0 ? Math.round((seasonPoles / seasonStarts) * 100) : 0,
+      polePct:   seasonStarts > 0 ? Math.round((seasonPoles   / seasonStarts) * 100) : 0,
     }
   };
 }
@@ -277,6 +290,7 @@ function renderStatsCard(stats) {
   const H = 460;
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
+  const F = FONT_NAME; // whichever font got registered
 
   // ── Background ──
   ctx.fillStyle = "#1a1a2e";
@@ -298,43 +312,43 @@ function renderStatsCard(stats) {
   roundRect(ctx, 18, 18, 72, 44, 8);
   ctx.fill();
   ctx.fillStyle = "#fff";
-  ctx.font = "11px Inter";
+  ctx.font = `11px "${F}"`;
   ctx.textAlign = "center";
   ctx.fillText(stats.srClass + " " + stats.currentSR, 54, 36);
-  ctx.font = "13px InterBold";
+  ctx.font = `bold 13px "${F}"`;
   ctx.fillText(stats.currentIR.toLocaleString(), 54, 54);
 
   // Driver name
   ctx.fillStyle = "#ffffff";
-  ctx.font = "28px InterBold";
+  ctx.font = `bold 28px "${F}"`;
   ctx.textAlign = "center";
   ctx.fillText(stats.name, W / 2, 42);
 
   // Subtitle
   ctx.fillStyle = "#a0aec0";
-  ctx.font = "14px Inter";
+  ctx.font = `14px "${F}"`;
   ctx.fillText("Sports Car · 2026 Season 1", W / 2, 64);
 
   // iR Percentile (top right)
   if (stats.irPercentile !== null) {
     ctx.fillStyle = "#a0aec0";
-    ctx.font = "12px Inter";
+    ctx.font = `12px "${F}"`;
     ctx.textAlign = "right";
     ctx.fillText(`top ${100 - stats.irPercentile + 1}% of Sports Car drivers`, W - 18, 36);
   }
 
   // ── iR / SR Change Pills ──
-  const irChangeText = stats.irChange >= 0 ? `iR +${stats.irChange}` : `iR ${stats.irChange}`;
-  const srChangeText = parseFloat(stats.srChange) >= 0 ? `SR +${stats.srChange}` : `SR ${stats.srChange}`;
+  const irChangeText  = stats.irChange >= 0 ? `iR +${stats.irChange}` : `iR ${stats.irChange}`;
+  const srChangeText  = parseFloat(stats.srChange) >= 0 ? `SR +${stats.srChange}` : `SR ${stats.srChange}`;
   const irChangeColor = stats.irChange > 0 ? "#10b981" : stats.irChange < 0 ? "#ef4444" : "#6b7280";
   const srChangeColor = parseFloat(stats.srChange) > 0 ? "#10b981" : parseFloat(stats.srChange) < 0 ? "#ef4444" : "#6b7280";
 
-  drawPill(ctx, W - 18, 54, irChangeText, irChangeColor, "right");
-  drawPill(ctx, W - 18 - 95, 54, srChangeText, srChangeColor, "right");
+  drawPill(ctx, W - 18,      54, irChangeText, irChangeColor, "right", F);
+  drawPill(ctx, W - 18 - 95, 54, srChangeText, srChangeColor, "right", F);
 
   // ── Section Labels ──
   ctx.fillStyle = "#6366f1";
-  ctx.font = "12px InterBold";
+  ctx.font = `bold 12px "${F}"`;
   ctx.textAlign = "left";
   ctx.fillText("CURRENT SEASON", 30, 105);
 
@@ -343,11 +357,11 @@ function renderStatsCard(stats) {
   ctx.fillText("CAREER", W - 30, 105);
 
   ctx.fillStyle = "#4a5568";
-  ctx.font = "11px Inter";
+  ctx.font = `11px "${F}"`;
   ctx.textAlign = "center";
   ctx.fillText("STAT", W / 2, 105);
 
-  // Divider line
+  // Divider
   ctx.strokeStyle = "#2d3748";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -357,43 +371,39 @@ function renderStatsCard(stats) {
 
   // ── Stats Grid ──
   const rows = [
-    { label: "Starts",      season: stats.season.starts,                                    career: stats.career.starts },
-    { label: "Wins",        season: `${stats.season.wins} (${stats.season.winPct}%)`,       career: `${stats.career.wins} (${stats.career.winPct}%)` },
-    { label: "Podiums",     season: `${stats.season.podiums} (${stats.season.podiumPct}%)`, career: `${stats.career.top5} (${stats.career.podiumPct}%)` },
-    { label: "Poles",       season: `${stats.season.poles} (${stats.season.polePct}%)`,     career: `${stats.career.poles} (${stats.career.polePct}%)` },
-    { label: "Total Laps",  season: stats.season.laps,                                      career: stats.career.laps },
-    { label: "Laps Led",    season: stats.season.lapsLed,                                   career: stats.career.lapsLed },
-    { label: "Avg Start",   season: stats.season.avgStart,                                  career: stats.career.avgStart },
-    { label: "Avg Finish",  season: stats.season.avgFinish,                                 career: stats.career.avgFinish },
-    { label: "Avg Points",  season: stats.season.avgPoints,                                 career: stats.career.avgPoints },
+    { label: "Starts",     season: stats.season.starts,                                    career: stats.career.starts },
+    { label: "Wins",       season: `${stats.season.wins} (${stats.season.winPct}%)`,       career: `${stats.career.wins} (${stats.career.winPct}%)` },
+    { label: "Podiums",    season: `${stats.season.podiums} (${stats.season.podiumPct}%)`, career: `${stats.career.top5} (${stats.career.podiumPct}%)` },
+    { label: "Poles",      season: `${stats.season.poles} (${stats.season.polePct}%)`,     career: `${stats.career.poles} (${stats.career.polePct}%)` },
+    { label: "Total Laps", season: stats.season.laps,                                      career: stats.career.laps },
+    { label: "Laps Led",   season: stats.season.lapsLed,                                   career: stats.career.lapsLed },
+    { label: "Avg Start",  season: stats.season.avgStart,                                  career: stats.career.avgStart },
+    { label: "Avg Finish", season: stats.season.avgFinish,                                 career: stats.career.avgFinish },
+    { label: "Avg Points", season: stats.season.avgPoints,                                 career: stats.career.avgPoints },
   ];
 
-  const rowH = 34;
+  const rowH   = 34;
   const startY = 128;
 
   rows.forEach((row, i) => {
     const y = startY + i * rowH;
-    const isEven = i % 2 === 0;
 
-    if (isEven) {
+    if (i % 2 === 0) {
       ctx.fillStyle = "rgba(255,255,255,0.03)";
       roundRect(ctx, 18, y - 2, W - 36, rowH - 2, 6);
       ctx.fill();
     }
 
-    // Label (center)
     ctx.fillStyle = "#a0aec0";
-    ctx.font = "13px Inter";
+    ctx.font = `13px "${F}"`;
     ctx.textAlign = "center";
     ctx.fillText(row.label, W / 2, y + 18);
 
-    // Season value (left)
     ctx.fillStyle = "#ffffff";
-    ctx.font = "15px InterBold";
+    ctx.font = `bold 15px "${F}"`;
     ctx.textAlign = "left";
     ctx.fillText(String(row.season), 36, y + 19);
 
-    // Career value (right)
     ctx.textAlign = "right";
     ctx.fillText(String(row.career), W - 36, y + 19);
   });
@@ -402,7 +412,7 @@ function renderStatsCard(stats) {
   ctx.fillStyle = "#2d3748";
   ctx.fillRect(0, H - 28, W, 28);
   ctx.fillStyle = "#718096";
-  ctx.font = "11px Inter";
+  ctx.font = `11px "${F}"`;
   ctx.textAlign = "center";
   ctx.fillText("GSR · iRacing Sports Car Stats · Data via iRacing Members API", W / 2, H - 10);
 
@@ -425,9 +435,9 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawPill(ctx, x, y, text, color, align = "left") {
+function drawPill(ctx, x, y, text, color, align = "left", fontName = "sans-serif") {
   const padding = 10;
-  ctx.font = "12px InterBold";
+  ctx.font = `bold 12px "${fontName}"`;
   const tw = ctx.measureText(text).width;
   const pw = tw + padding * 2;
   const px = align === "right" ? x - pw : x;
@@ -455,16 +465,16 @@ function getSRColor(srClass) {
 const app = express();
 const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
-const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
+const TOKEN_URL     = "https://oauth.iracing.com/oauth2/token";
 
-const pkceStore = {};
+const pkceStore   = {};
 const TEN_MINUTES = 10 * 60 * 1000;
 
 app.get("/oauth/login", (req, res) => {
   const state = req.query.state || "unknown";
 
-  const codeVerifier = crypto.randomBytes(64).toString("hex");
-  const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
+  const codeVerifier  = crypto.randomBytes(64).toString("hex");
+  const hash          = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
   pkceStore[state] = { verifier: codeVerifier, createdAt: Date.now() };
@@ -492,50 +502,33 @@ app.get("/oauth/callback", async (req, res) => {
   try {
     const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
     const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: IRACING_CLIENT_ID,
+      grant_type:    "authorization_code",
+      client_id:     IRACING_CLIENT_ID,
       client_secret: maskedSecret,
       code,
-      redirect_uri: IRACING_REDIRECT_URI,
+      redirect_uri:  IRACING_REDIRECT_URI,
       code_verifier: pkceEntry.verifier
     });
 
-    const tokenRes = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString()
-    });
-
+    const tokenRes  = await fetch(TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || tokenData.error) return res.status(400).send(`OAuth Error: ${tokenData.error || "Unknown"}`);
 
-    const profileRes = await fetch("https://oauth.iracing.com/oauth2/iracing/profile", {
-      headers: { Authorization: `Bearer ${tokenData.access_token}` }
-    });
-
-    let iracingName = "Unknown";
+    const profileRes  = await fetch("https://oauth.iracing.com/oauth2/iracing/profile", { headers: { Authorization: `Bearer ${tokenData.access_token}` } });
+    let iracingName   = "Unknown";
     if (profileRes.ok) {
       const profileJson = await profileRes.json();
       if (profileJson.iracing_name) {
-        let fullName = profileJson.iracing_name.trim();
-        const parts = fullName.split(/\s+/);
-        iracingName = parts.length >= 2
-          ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.`
-          : fullName;
+        const parts = profileJson.iracing_name.trim().split(/\s+/);
+        iracingName = parts.length >= 2 ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.` : parts[0];
       }
     }
 
     let drivers = loadLinkedDrivers();
     drivers = drivers.filter(d => d.discordId !== discordId);
-    drivers.push({
-      discordId,
-      iracingName,
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token,
-      expiresAt: Date.now() + tokenData.expires_in * 1000
-    });
-
+    drivers.push({ discordId, iracingName, accessToken: tokenData.access_token, refreshToken: tokenData.refresh_token, expiresAt: Date.now() + tokenData.expires_in * 1000 });
     saveLinkedDrivers(drivers);
+
     res.send(`✅ Linked as **${iracingName}**!<br><br>You can now close this window.`);
   } catch (err) {
     console.error("Callback error:", err);
@@ -557,7 +550,7 @@ client.on("interactionCreate", async interaction => {
   if (interaction.commandName === "ping") return interaction.reply("🏁 Pong!");
 
   if (interaction.commandName === "link") {
-    const state = encodeURIComponent(interaction.user.id);
+    const state    = encodeURIComponent(interaction.user.id);
     const loginUrl = `https://www.gsracing.app/oauth/login?state=${state}`;
     return interaction.reply({ content: `🔗 Link iRacing: ${loginUrl}`, ephemeral: true });
   }
@@ -592,11 +585,11 @@ client.on("interactionCreate", async interaction => {
 
   if (interaction.commandName === "myirating") {
     const drivers = loadLinkedDrivers();
-    const driver = drivers.find(d => d.discordId === interaction.user.id);
+    const driver  = drivers.find(d => d.discordId === interaction.user.id);
     if (!driver) return interaction.reply({ content: "You are not linked yet. Use `/link` first!", ephemeral: true });
 
-    const current = driver.lastIRating ?? "??";
-    let changeText = "No change yet";
+    const current    = driver.lastIRating ?? "??";
+    let   changeText = "No change yet";
     if (driver.lastChange !== undefined) {
       changeText = driver.lastChange > 0 ? `**+${driver.lastChange}**` : `**${driver.lastChange}**`;
     }
@@ -605,40 +598,31 @@ client.on("interactionCreate", async interaction => {
       .setTitle("📊 Your iRating")
       .setColor(0x00ff88)
       .addFields(
-        { name: "iRacing Name", value: driver.iracingName || "Unknown", inline: true },
-        { name: "Current iRating", value: current.toString(), inline: true },
-        { name: "Change", value: changeText, inline: true },
-        { name: "Current Rank", value: driver.lastRank ? `#${driver.lastRank}` : "Not ranked yet", inline: true }
+        { name: "iRacing Name",  value: driver.iracingName || "Unknown", inline: true },
+        { name: "Current iRating", value: current.toString(),            inline: true },
+        { name: "Change",        value: changeText,                      inline: true },
+        { name: "Current Rank",  value: driver.lastRank ? `#${driver.lastRank}` : "Not ranked yet", inline: true }
       )
       .setTimestamp();
 
     return interaction.reply({ embeds: [embed] });
   }
 
-  if (interaction.commandName === "leaderboard") {
-    await showLeaderboard(interaction);
-  }
-
-  if (interaction.commandName === "stats") {
-    await showStats(interaction);
-  }
+  if (interaction.commandName === "leaderboard") await showLeaderboard(interaction);
+  if (interaction.commandName === "stats")       await showStats(interaction);
 });
 
 // ====================== STATS COMMAND ======================
 async function showStats(interaction) {
   await interaction.deferReply();
-
   try {
     const drivers = loadLinkedDrivers();
-    const driver = drivers.find(d => d.discordId === interaction.user.id);
+    const driver  = drivers.find(d => d.discordId === interaction.user.id);
+    if (!driver) return interaction.editReply({ content: "❌ You are not linked yet. Use `/link` first!" });
 
-    if (!driver) {
-      return interaction.editReply({ content: "❌ You are not linked yet. Use `/link` first!" });
-    }
-
-    const stats = await fetchDriverStats(driver);
+    const stats      = await fetchDriverStats(driver);
     const imageBuffer = renderStatsCard(stats);
-    const attachment = new AttachmentBuilder(imageBuffer, { name: "stats.png" });
+    const attachment  = new AttachmentBuilder(imageBuffer, { name: "stats.png" });
 
     await interaction.editReply({ files: [attachment] });
   } catch (err) {
@@ -666,7 +650,7 @@ async function showLeaderboard(interactionOrChannel) {
         if (ir !== null) {
           const old = driver.lastIRating ?? ir;
           driver.lastIRating = ir;
-          driver.lastChange = ir - old;
+          driver.lastChange  = ir - old;
         }
       } catch (e) {}
     }
@@ -680,7 +664,7 @@ async function showLeaderboard(interactionOrChannel) {
     else if (drivers[0]?.lastChange < 0) embedColor = 0xff4444;
 
     const totalDrivers = drivers.length;
-    const displayed = Math.min(drivers.length, 20);
+    const displayed    = Math.min(drivers.length, 20);
 
     const embed = new EmbedBuilder()
       .setColor(embedColor)
@@ -689,16 +673,16 @@ async function showLeaderboard(interactionOrChannel) {
       .setTimestamp();
 
     drivers.slice(0, 20).forEach((d, i) => {
-      let rankDisplay = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}️⃣`;
+      const rankDisplay = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}️⃣`;
       let change = "";
       if (d.lastChange !== undefined) {
-        if (d.lastChange > 0) change = ` 🟢 **+${d.lastChange}** ⬆️`;
+        if      (d.lastChange > 0) change = ` 🟢 **+${d.lastChange}** ⬆️`;
         else if (d.lastChange < 0) change = ` 🔴 **${d.lastChange}** ⬇️`;
-        else change = ` ⚪ **0**`;
+        else                       change = ` ⚪ **0**`;
       }
       embed.addFields({
-        name: `${rankDisplay} **${i + 1}.** ${d.iracingName || "Unknown"}`,
-        value: `**${d.lastIRating ?? "??"}** iR${change}`,
+        name:   `${rankDisplay} **${i + 1}.** ${d.iracingName || "Unknown"}`,
+        value:  `**${d.lastIRating ?? "??"}** iR${change}`,
         inline: false
       });
     });
@@ -710,7 +694,7 @@ async function showLeaderboard(interactionOrChannel) {
     });
 
     if (isInteraction) await interactionOrChannel.editReply({ embeds: [embed] });
-    else await interactionOrChannel.send({ embeds: [embed] });
+    else               await interactionOrChannel.send({ embeds: [embed] });
 
   } catch (err) {
     console.error("Leaderboard error:", err);
@@ -725,21 +709,17 @@ async function showLeaderboard(interactionOrChannel) {
 
 // ====================== REGISTER COMMANDS ======================
 const commands = [
-  { name: "ping", description: "Test bot" },
-  { name: "link", description: "Link iRacing account" },
-  { name: "unlinkme", description: "Unlink yourself" },
-  {
-    name: "unlink",
-    description: "Admin: Unlink another driver",
-    options: [{ name: "user", description: "User to unlink", type: 6, required: true }]
-  },
-  { name: "myirating", description: "Show your personal iRating" },
+  { name: "ping",        description: "Test bot" },
+  { name: "link",        description: "Link iRacing account" },
+  { name: "unlinkme",    description: "Unlink yourself" },
+  { name: "unlink",      description: "Admin: Unlink another driver",
+    options: [{ name: "user", description: "User to unlink", type: 6, required: true }] },
+  { name: "myirating",   description: "Show your personal iRating" },
   { name: "leaderboard", description: "Show GSR iRating Leaderboard" },
-  { name: "stats", description: "Show your Sports Car stats card" }
+  { name: "stats",       description: "Show your Sports Car stats card" }
 ];
 
 const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-
 (async () => {
   try {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
@@ -750,16 +730,8 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 })();
 
 // ====================== STARTUP ======================
-// Register fonts first, then log in
-registerFont()
-  .then(() => {
-    console.log("✅ Fonts registered.");
-    client.login(DISCORD_TOKEN);
-  })
-  .catch(err => {
-    console.error("⚠️ Font registration failed, continuing anyway:", err.message);
-    client.login(DISCORD_TOKEN);
-  });
+registerFont();
+client.login(DISCORD_TOKEN);
 
 // ====================== CRON ======================
 const { CronJob } = require("cron");
