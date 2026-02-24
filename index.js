@@ -220,7 +220,8 @@ app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`))
 // ====================== DISCORD ======================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once("ready", () => console.log("✅ Bot logged in!"));
+// Fixed deprecation warning: use clientReady instead of ready
+client.once("clientReady", () => console.log("✅ Bot logged in!"));
 
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -293,81 +294,105 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-// ====================== IMPROVED LEADERBOARD ======================
+// ====================== LEADERBOARD ======================
 async function showLeaderboard(interactionOrChannel) {
-  let drivers = loadLinkedDrivers();
-  if (drivers.length === 0) {
-    return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
-  }
+  // Determine if this is a slash command interaction or a channel (cron job)
+  const isInteraction = !!(interactionOrChannel.deferReply);
 
-  // Update iRatings
-  for (const driver of drivers) {
-    try {
-      const ir = await getCurrentIRating(driver);
-      if (ir !== null) {
-        const old = driver.lastIRating ?? ir;
-        driver.lastIRating = ir;
-        driver.lastChange = ir - old;
-      }
-    } catch (e) {}
-  }
-
-  drivers.sort((a, b) => (b.lastIRating ?? 0) - (a.lastIRating ?? 0));
-  drivers.forEach((d, i) => d.lastRank = i + 1);
-  saveLinkedDrivers(drivers);
-
-  // Determine embed color based on #1 change
-  let embedColor = 0x00ff88;
-  if (drivers[0]?.lastChange > 0) {
-    embedColor = 0x00cc66;
-  } else if (drivers[0]?.lastChange < 0) {
-    embedColor = 0xff4444;
-  }
-
-  const totalDrivers = drivers.length;
-  const displayed = Math.min(drivers.length, 20);
-
-  const embed = new EmbedBuilder()
-    .setColor(embedColor)
-    .setThumbnail("https://cdn.discordapp.com/attachments/1396172486558613514/1402298298450186350/Maybe.png?ex=699a6acf&is=6999194f&hm=5bd0de5d8200e0af87742858135e252c608bc6ad1d144046203fee96edbd8d17&")
-    .setDescription("**🏁 GSR iRating Leaderboard**")
-    .setTimestamp();
-
-  drivers.slice(0, 20).forEach((d, i) => {
-    let rankDisplay = "";
-    if (i === 0) rankDisplay = "🥇";
-    else if (i === 1) rankDisplay = "🥈";
-    else if (i === 2) rankDisplay = "🥉";
-    else rankDisplay = `${i + 1}️⃣`;
-
-    let change = "";
-    if (d.lastChange !== undefined) {
-      if (d.lastChange > 0) {
-        change = ` 🟢 **+${d.lastChange}** ⬆️`;
-      } else if (d.lastChange < 0) {
-        change = ` 🔴 **${d.lastChange}** ⬇️`;
+  try {
+    let drivers = loadLinkedDrivers();
+    if (drivers.length === 0) {
+      if (isInteraction) {
+        return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
       } else {
-        change = ` ⚪ **0**`;
+        return interactionOrChannel.send({ content: "No drivers linked yet." });
       }
     }
 
-    embed.addFields({
-      name: `${rankDisplay} **${i + 1}.** ${d.iracingName || "Unknown"}`,
-      value: `**${d.lastIRating ?? "??"}** iR${change}`,
-      inline: false
+    // Defer immediately so Discord doesn't time out while we fetch iRatings
+    if (isInteraction) {
+      await interactionOrChannel.deferReply();
+    }
+
+    // Update iRatings
+    for (const driver of drivers) {
+      try {
+        const ir = await getCurrentIRating(driver);
+        if (ir !== null) {
+          const old = driver.lastIRating ?? ir;
+          driver.lastIRating = ir;
+          driver.lastChange = ir - old;
+        }
+      } catch (e) {}
+    }
+
+    drivers.sort((a, b) => (b.lastIRating ?? 0) - (a.lastIRating ?? 0));
+    drivers.forEach((d, i) => d.lastRank = i + 1);
+    saveLinkedDrivers(drivers);
+
+    // Determine embed color based on #1 change
+    let embedColor = 0x00ff88;
+    if (drivers[0]?.lastChange > 0) {
+      embedColor = 0x00cc66;
+    } else if (drivers[0]?.lastChange < 0) {
+      embedColor = 0xff4444;
+    }
+
+    const totalDrivers = drivers.length;
+    const displayed = Math.min(drivers.length, 20);
+
+    const embed = new EmbedBuilder()
+      .setColor(embedColor)
+      .setThumbnail("https://cdn.discordapp.com/attachments/1396172486558613514/1402298298450186350/Maybe.png?ex=699a6acf&is=6999194f&hm=5bd0de5d8200e0af87742858135e252c608bc6ad1d144046203fee96edbd8d17&")
+      .setDescription("**🏁 GSR iRating Leaderboard**")
+      .setTimestamp();
+
+    drivers.slice(0, 20).forEach((d, i) => {
+      let rankDisplay = "";
+      if (i === 0) rankDisplay = "🥇";
+      else if (i === 1) rankDisplay = "🥈";
+      else if (i === 2) rankDisplay = "🥉";
+      else rankDisplay = `${i + 1}️⃣`;
+
+      let change = "";
+      if (d.lastChange !== undefined) {
+        if (d.lastChange > 0) {
+          change = ` 🟢 **+${d.lastChange}** ⬆️`;
+        } else if (d.lastChange < 0) {
+          change = ` 🔴 **${d.lastChange}** ⬇️`;
+        } else {
+          change = ` ⚪ **0**`;
+        }
+      }
+
+      embed.addFields({
+        name: `${rankDisplay} **${i + 1}.** ${d.iracingName || "Unknown"}`,
+        value: `**${d.lastIRating ?? "??"}** iR${change}`,
+        inline: false
+      });
     });
-  });
 
-  embed.setFooter({
-    text: displayed < totalDrivers
-      ? `Showing top ${displayed} of ${totalDrivers} drivers`
-      : `Total drivers: ${totalDrivers}`
-  });
+    embed.setFooter({
+      text: displayed < totalDrivers
+        ? `Showing top ${displayed} of ${totalDrivers} drivers`
+        : `Total drivers: ${totalDrivers}`
+    });
 
-  if (interactionOrChannel.reply) {
-    await interactionOrChannel.reply({ embeds: [embed] });
-  } else {
-    await interactionOrChannel.send({ embeds: [embed] });
+    if (isInteraction) {
+      await interactionOrChannel.editReply({ embeds: [embed] });
+    } else {
+      await interactionOrChannel.send({ embeds: [embed] });
+    }
+
+  } catch (err) {
+    console.error("Leaderboard error:", err);
+    if (isInteraction) {
+      // If we already deferred, use editReply — otherwise fall back to reply
+      const respond = interactionOrChannel.deferred
+        ? interactionOrChannel.editReply.bind(interactionOrChannel)
+        : interactionOrChannel.reply.bind(interactionOrChannel);
+      await respond({ content: "❌ Failed to load leaderboard. Please try again." }).catch(() => {});
+    }
   }
 }
 
