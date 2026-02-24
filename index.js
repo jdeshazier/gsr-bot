@@ -113,15 +113,33 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
-let pkceStore = {};
+
+// PKCE store keyed by Discord user ID (state) to prevent race conditions
+const pkceStore = {};
+const TEN_MINUTES = 10 * 60 * 1000;
 
 app.get("/oauth/login", (req, res) => {
-  const codeVerifier = crypto.randomBytes(32).toString("hex");
+  const state = req.query.state || "unknown";
+
+  // Generate a 128-character verifier (iRacing recommends max length)
+  const codeVerifier = crypto.randomBytes(64).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  pkceStore.verifier = codeVerifier;
 
-  const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile&state=${encodeURIComponent(req.query.state || "unknown")}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+  // Store verifier keyed by Discord user ID instead of a single global slot
+  pkceStore[state] = {
+    verifier: codeVerifier,
+    createdAt: Date.now()
+  };
+
+  // Clean up stale verifiers older than 10 minutes
+  for (const key of Object.keys(pkceStore)) {
+    if (Date.now() - pkceStore[key].createdAt > TEN_MINUTES) {
+      delete pkceStore[key];
+    }
+  }
+
+  const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
   console.log("Redirecting to:", authUrl);
   res.redirect(authUrl);
 });
@@ -129,6 +147,15 @@ app.get("/oauth/login", (req, res) => {
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
+
+  const discordId = req.query.state || "unknown";
+
+  // Retrieve and immediately delete the verifier for this user
+  const pkceEntry = pkceStore[discordId];
+  delete pkceStore[discordId];
+
+  if (!pkceEntry) return res.status(400).send("OAuth session expired or not found. Please try linking again.");
+  if (Date.now() - pkceEntry.createdAt > TEN_MINUTES) return res.status(400).send("OAuth session expired. Please try linking again.");
 
   try {
     const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
@@ -138,7 +165,7 @@ app.get("/oauth/callback", async (req, res) => {
       client_secret: maskedSecret,
       code,
       redirect_uri: IRACING_REDIRECT_URI,
-      code_verifier: pkceStore.verifier
+      code_verifier: pkceEntry.verifier
     });
 
     const tokenRes = await fetch(TOKEN_URL, {
@@ -149,8 +176,6 @@ app.get("/oauth/callback", async (req, res) => {
 
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || tokenData.error) return res.status(400).send(`OAuth Error: ${tokenData.error || "Unknown"}`);
-
-    const discordId = req.query.state || "unknown";
 
     const profileUrl = "https://oauth.iracing.com/oauth2/iracing/profile";
     const profileRes = await fetch(profileUrl, {
@@ -292,12 +317,15 @@ async function showLeaderboard(interactionOrChannel) {
   saveLinkedDrivers(drivers);
 
   // Determine embed color based on #1 change
-  let embedColor = 0x00ff88; // default
+  let embedColor = 0x00ff88;
   if (drivers[0]?.lastChange > 0) {
-    embedColor = 0x00cc66; // brighter green
+    embedColor = 0x00cc66;
   } else if (drivers[0]?.lastChange < 0) {
-    embedColor = 0xff4444; // red
+    embedColor = 0xff4444;
   }
+
+  const totalDrivers = drivers.length;
+  const displayed = Math.min(drivers.length, 20);
 
   const embed = new EmbedBuilder()
     .setColor(embedColor)
@@ -330,7 +358,11 @@ async function showLeaderboard(interactionOrChannel) {
     });
   });
 
-  embed.setFooter({ text: `Total drivers: ${drivers.length}` });
+  embed.setFooter({
+    text: displayed < totalDrivers
+      ? `Showing top ${displayed} of ${totalDrivers} drivers`
+      : `Total drivers: ${totalDrivers}`
+  });
 
   if (interactionOrChannel.reply) {
     await interactionOrChannel.reply({ embeds: [embed] });
