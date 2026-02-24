@@ -5,6 +5,7 @@ const {
   REST,
   Routes,
   EmbedBuilder,
+  AttachmentBuilder,
   PermissionsBitField
 } = require("discord.js");
 const express = require("express");
@@ -12,6 +13,7 @@ const fetch = require("node-fetch");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { createCanvas } = require("canvas");
 
 // ====================== ENV ======================
 const {
@@ -108,35 +110,353 @@ async function getCurrentIRating(user) {
   return null;
 }
 
+// Fetch a signed iRacing data URL and follow the link to get the actual JSON
+async function fetchIRacingData(token, url) {
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) return null;
+  const json = await res.json();
+  if (json.link) {
+    const dataRes = await fetch(json.link);
+    if (!dataRes.ok) return null;
+    return dataRes.json();
+  }
+  return json;
+}
+
+// ====================== STATS FETCHER ======================
+async function fetchDriverStats(user) {
+  const token = await getValidAccessToken(user);
+
+  // Career stats (category_id 5 = Sports Car)
+  const careerData = await fetchIRacingData(
+    token,
+    "https://members-ng.iracing.com/data/stats/member_career"
+  );
+
+  // Recent results for current season stats
+  const recentData = await fetchIRacingData(
+    token,
+    "https://members-ng.iracing.com/data/results/member_recent_races"
+  );
+
+  // Member profile for SR and iR
+  const summaryData = await fetchIRacingData(
+    token,
+    "https://members-ng.iracing.com/data/member/info"
+  );
+
+  // iR chart for change calculation (Sports Car = category 5)
+  const irChartData = await fetchIRacingData(
+    token,
+    "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"
+  );
+
+  // SR chart for change calculation (Sports Car = category 5)
+  const srChartData = await fetchIRacingData(
+    token,
+    "https://members-ng.iracing.com/data/member/chart_data?chart_type=2&category_id=5"
+  );
+
+  // Pull Sports Car career stats row
+  const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
+
+  // iR change: last two data points
+  let irChange = 0;
+  let currentIR = user.lastIRating ?? 0;
+  if (irChartData?.data?.length >= 2) {
+    const pts = irChartData.data;
+    currentIR = pts[pts.length - 1].value;
+    irChange = pts[pts.length - 1].value - pts[pts.length - 2].value;
+  }
+
+  // SR change: last two data points
+  let srChange = 0;
+  let currentSR = 0;
+  if (srChartData?.data?.length >= 2) {
+    const pts = srChartData.data;
+    currentSR = pts[pts.length - 1].value / 100; // iRacing stores SR * 100
+    srChange = (pts[pts.length - 1].value - pts[pts.length - 2].value) / 100;
+  }
+
+  // Current season stats: filter recent races to Sports Car (category 5)
+  const seasonRaces = (recentData?.races || []).filter(r => r.category_id === 5);
+  const seasonStarts = seasonRaces.length;
+  const seasonWins = seasonRaces.filter(r => r.winner_group_id === r.group_id || r.finish_position_in_class === 1).length;
+  const seasonPodiums = seasonRaces.filter(r => r.finish_position_in_class <= 3).length;
+  const seasonPoles = seasonRaces.filter(r => r.starting_position_in_class === 1).length;
+  const seasonLaps = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
+  const seasonLapsLed = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
+  const seasonAvgStart = seasonStarts > 0
+    ? (seasonRaces.reduce((a, r) => a + (r.starting_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2)
+    : "N/A";
+  const seasonAvgFinish = seasonStarts > 0
+    ? (seasonRaces.reduce((a, r) => a + (r.finish_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2)
+    : "N/A";
+  const seasonAvgPoints = seasonStarts > 0
+    ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts)
+    : "N/A";
+
+  // iR percentile: rough estimate bucket based on iRating value
+  // iRacing doesn't expose percentile directly via API
+  let irPercentile = null;
+  if (currentIR > 0) {
+    // Approximate distribution: median Sports Car iR is ~1500, top 3.5% is ~4000+
+    if (currentIR >= 6000) irPercentile = 99;
+    else if (currentIR >= 5000) irPercentile = 98;
+    else if (currentIR >= 4500) irPercentile = 97;
+    else if (currentIR >= 4000) irPercentile = 96;
+    else if (currentIR >= 3500) irPercentile = 93;
+    else if (currentIR >= 3000) irPercentile = 88;
+    else if (currentIR >= 2500) irPercentile = 78;
+    else if (currentIR >= 2000) irPercentile = 65;
+    else if (currentIR >= 1500) irPercentile = 50;
+    else if (currentIR >= 1000) irPercentile = 30;
+    else irPercentile = 15;
+  }
+
+  // SR letter class
+  const srClass = currentSR >= 4.0 ? "A" : currentSR >= 3.0 ? "B" : currentSR >= 2.0 ? "C" : currentSR >= 1.0 ? "D" : "R";
+
+  return {
+    name: user.iracingName,
+    currentIR,
+    irChange,
+    irPercentile,
+    currentSR: currentSR.toFixed(2),
+    srClass,
+    srChange: srChange.toFixed(2),
+    // Career
+    career: {
+      starts: sportsCar.starts ?? 0,
+      wins: sportsCar.wins ?? 0,
+      top5: sportsCar.top5 ?? 0,
+      poles: sportsCar.poles ?? 0,
+      laps: sportsCar.laps_complete ?? 0,
+      lapsLed: sportsCar.laps_led ?? 0,
+      avgStart: sportsCar.avg_start_position?.toFixed(2) ?? "N/A",
+      avgFinish: sportsCar.avg_finish_position?.toFixed(2) ?? "N/A",
+      avgPoints: sportsCar.avg_champ_points ? Math.round(sportsCar.avg_champ_points) : "N/A",
+      winPct: sportsCar.starts > 0 ? Math.round((sportsCar.wins / sportsCar.starts) * 100) : 0,
+      podiumPct: sportsCar.starts > 0 ? Math.round(((sportsCar.top5 ?? 0) / sportsCar.starts) * 100) : 0,
+      polePct: sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
+    },
+    // Current season
+    season: {
+      starts: seasonStarts,
+      wins: seasonWins,
+      podiums: seasonPodiums,
+      poles: seasonPoles,
+      laps: seasonLaps,
+      lapsLed: seasonLapsLed,
+      avgStart: seasonAvgStart,
+      avgFinish: seasonAvgFinish,
+      avgPoints: seasonAvgPoints,
+      winPct: seasonStarts > 0 ? Math.round((seasonWins / seasonStarts) * 100) : 0,
+      podiumPct: seasonStarts > 0 ? Math.round((seasonPodiums / seasonStarts) * 100) : 0,
+      polePct: seasonStarts > 0 ? Math.round((seasonPoles / seasonStarts) * 100) : 0,
+    }
+  };
+}
+
+// ====================== STATS CARD RENDERER ======================
+function renderStatsCard(stats) {
+  const W = 780;
+  const H = 460;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+
+  // ── Background ──
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle gradient overlay
+  const grad = ctx.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, "rgba(99, 102, 241, 0.08)");
+  grad.addColorStop(1, "rgba(16, 185, 129, 0.08)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Header Bar ──
+  ctx.fillStyle = "#16213e";
+  roundRect(ctx, 0, 0, W, 80, { tl: 0, tr: 0, br: 0, bl: 0 });
+  ctx.fill();
+
+  // SR Badge (top left)
+  const srColor = getSRColor(stats.srClass);
+  ctx.fillStyle = srColor;
+  roundRect(ctx, 18, 18, 72, 44, 8);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(stats.srClass + " " + stats.currentSR, 54, 36);
+  ctx.font = "bold 13px sans-serif";
+  ctx.fillText(stats.currentIR.toLocaleString(), 54, 54);
+
+  // Driver name
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 28px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(stats.name, W / 2, 42);
+
+  // Subtitle
+  ctx.fillStyle = "#a0aec0";
+  ctx.font = "14px sans-serif";
+  ctx.fillText("Sports Car · 2026 Season 1", W / 2, 64);
+
+  // iR Percentile (top right)
+  if (stats.irPercentile !== null) {
+    ctx.fillStyle = "#a0aec0";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(`top ${100 - stats.irPercentile + 1}% of Sports Car drivers`, W - 18, 36);
+  }
+
+  // ── iR / SR Change Pills ──
+  const irChangeText = stats.irChange >= 0 ? `iR +${stats.irChange}` : `iR ${stats.irChange}`;
+  const srChangeText = stats.srChange >= 0 ? `SR +${stats.srChange}` : `SR ${stats.srChange}`;
+  const irChangeColor = stats.irChange > 0 ? "#10b981" : stats.irChange < 0 ? "#ef4444" : "#6b7280";
+  const srChangeColor = parseFloat(stats.srChange) > 0 ? "#10b981" : parseFloat(stats.srChange) < 0 ? "#ef4444" : "#6b7280";
+
+  drawPill(ctx, W - 18, 56, irChangeText, irChangeColor, "right");
+  drawPill(ctx, W - 18 - 90, 56, srChangeText, srChangeColor, "right");
+
+  // ── Section Labels ──
+  ctx.fillStyle = "#6366f1";
+  ctx.font = "bold 12px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("CURRENT SEASON", 30, 105);
+
+  ctx.fillStyle = "#6366f1";
+  ctx.textAlign = "right";
+  ctx.fillText("CAREER", W - 30, 105);
+
+  // Divider
+  ctx.strokeStyle = "#2d3748";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(30, 112);
+  ctx.lineTo(W - 30, 112);
+  ctx.stroke();
+
+  // ── Stats Grid ──
+  // Each row: label | season value | career value
+  const rows = [
+    { label: "Starts",         season: stats.season.starts,                          career: stats.career.starts },
+    { label: "Wins",           season: `${stats.season.wins} (${stats.season.winPct}%)`,    career: `${stats.career.wins} (${stats.career.winPct}%)` },
+    { label: "Podiums",        season: `${stats.season.podiums} (${stats.season.podiumPct}%)`, career: `${stats.career.top5} (${stats.career.podiumPct}%)` },
+    { label: "Poles",          season: `${stats.season.poles} (${stats.season.polePct}%)`,   career: `${stats.career.poles} (${stats.career.polePct}%)` },
+    { label: "Total Laps",     season: stats.season.laps,                            career: stats.career.laps },
+    { label: "Laps Led",       season: stats.season.lapsLed,                         career: stats.career.lapsLed },
+    { label: "Avg Start",      season: stats.season.avgStart,                        career: stats.career.avgStart },
+    { label: "Avg Finish",     season: stats.season.avgFinish,                       career: stats.career.avgFinish },
+    { label: "Avg Points",     season: stats.season.avgPoints,                       career: stats.career.avgPoints },
+  ];
+
+  const rowH = 34;
+  const startY = 128;
+
+  rows.forEach((row, i) => {
+    const y = startY + i * rowH;
+    const isEven = i % 2 === 0;
+
+    // Row background
+    if (isEven) {
+      ctx.fillStyle = "rgba(255,255,255,0.03)";
+      roundRect(ctx, 18, y - 2, W - 36, rowH - 2, 6);
+      ctx.fill();
+    }
+
+    // Label (center)
+    ctx.fillStyle = "#a0aec0";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(row.label, W / 2, y + 18);
+
+    // Season value (left)
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 15px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(String(row.season), 36, y + 19);
+
+    // Career value (right)
+    ctx.textAlign = "right";
+    ctx.fillText(String(row.career), W - 36, y + 19);
+  });
+
+  // ── Footer ──
+  ctx.fillStyle = "#2d3748";
+  ctx.fillRect(0, H - 28, W, 28);
+  ctx.fillStyle = "#718096";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("GSR · iRacing Sports Car Stats · Data via iRacing Members API", W / 2, H - 10);
+
+  return canvas.toBuffer("image/png");
+}
+
+// ── Canvas helpers ──
+function roundRect(ctx, x, y, w, h, r) {
+  if (typeof r === "number") r = { tl: r, tr: r, br: r, bl: r };
+  ctx.beginPath();
+  ctx.moveTo(x + r.tl, y);
+  ctx.lineTo(x + w - r.tr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r.tr);
+  ctx.lineTo(x + w, y + h - r.br);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r.br, y + h);
+  ctx.lineTo(x + r.bl, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r.bl);
+  ctx.lineTo(x, y + r.tl);
+  ctx.quadraticCurveTo(x, y, x + r.tl, y);
+  ctx.closePath();
+}
+
+function drawPill(ctx, x, y, text, color, align = "left") {
+  const padding = 10;
+  ctx.font = "bold 12px sans-serif";
+  const tw = ctx.measureText(text).width;
+  const pw = tw + padding * 2;
+  const px = align === "right" ? x - pw : x;
+
+  ctx.fillStyle = color + "33"; // 20% opacity background
+  roundRect(ctx, px, y, pw, 20, 10);
+  ctx.fill();
+
+  ctx.fillStyle = color;
+  ctx.textAlign = align === "right" ? "right" : "left";
+  ctx.fillText(text, align === "right" ? x - padding : x + padding, y + 14);
+}
+
+function getSRColor(srClass) {
+  switch (srClass) {
+    case "A": return "#10b981";
+    case "B": return "#3b82f6";
+    case "C": return "#f59e0b";
+    case "D": return "#f97316";
+    default:  return "#6b7280";
+  }
+}
+
 // ====================== EXPRESS ======================
 const app = express();
 const PORT = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL = "https://oauth.iracing.com/oauth2/token";
 
-// PKCE store keyed by Discord user ID (state) to prevent race conditions
 const pkceStore = {};
 const TEN_MINUTES = 10 * 60 * 1000;
 
 app.get("/oauth/login", (req, res) => {
   const state = req.query.state || "unknown";
 
-  // Generate a 128-character verifier (iRacing recommends max length)
   const codeVerifier = crypto.randomBytes(64).toString("hex");
   const hash = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-  // Store verifier keyed by Discord user ID instead of a single global slot
-  pkceStore[state] = {
-    verifier: codeVerifier,
-    createdAt: Date.now()
-  };
+  pkceStore[state] = { verifier: codeVerifier, createdAt: Date.now() };
 
-  // Clean up stale verifiers older than 10 minutes
   for (const key of Object.keys(pkceStore)) {
-    if (Date.now() - pkceStore[key].createdAt > TEN_MINUTES) {
-      delete pkceStore[key];
-    }
+    if (Date.now() - pkceStore[key].createdAt > TEN_MINUTES) delete pkceStore[key];
   }
 
   const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
@@ -149,8 +469,6 @@ app.get("/oauth/callback", async (req, res) => {
   if (!code) return res.status(400).send("Missing authorization code.");
 
   const discordId = req.query.state || "unknown";
-
-  // Retrieve and immediately delete the verifier for this user
   const pkceEntry = pkceStore[discordId];
   delete pkceStore[discordId];
 
@@ -177,8 +495,7 @@ app.get("/oauth/callback", async (req, res) => {
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || tokenData.error) return res.status(400).send(`OAuth Error: ${tokenData.error || "Unknown"}`);
 
-    const profileUrl = "https://oauth.iracing.com/oauth2/iracing/profile";
-    const profileRes = await fetch(profileUrl, {
+    const profileRes = await fetch("https://oauth.iracing.com/oauth2/iracing/profile", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
 
@@ -188,11 +505,9 @@ app.get("/oauth/callback", async (req, res) => {
       if (profileJson.iracing_name) {
         let fullName = profileJson.iracing_name.trim();
         const parts = fullName.split(/\s+/);
-        if (parts.length >= 2) {
-          iracingName = `${parts[0]} ${parts[parts.length-1][0].toUpperCase()}.`;
-        } else {
-          iracingName = fullName;
-        }
+        iracingName = parts.length >= 2
+          ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.`
+          : fullName;
       }
     }
 
@@ -220,7 +535,6 @@ app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`))
 // ====================== DISCORD ======================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Fixed deprecation warning: use clientReady instead of ready
 client.once("clientReady", () => console.log("✅ Bot logged in!"));
 
 client.on("interactionCreate", async interaction => {
@@ -241,9 +555,8 @@ client.on("interactionCreate", async interaction => {
     if (drivers.length < initial) {
       saveLinkedDrivers(drivers);
       return interaction.reply({ content: "✅ You have been unlinked from the leaderboard.", ephemeral: true });
-    } else {
-      return interaction.reply({ content: "You were not linked.", ephemeral: true });
     }
+    return interaction.reply({ content: "You were not linked.", ephemeral: true });
   }
 
   if (interaction.commandName === "unlink") {
@@ -259,9 +572,8 @@ client.on("interactionCreate", async interaction => {
     if (drivers.length < initial) {
       saveLinkedDrivers(drivers);
       return interaction.reply(`✅ Successfully unlinked **${target.tag}**.`);
-    } else {
-      return interaction.reply({ content: "That user was not linked.", ephemeral: true });
     }
+    return interaction.reply({ content: "That user was not linked.", ephemeral: true });
   }
 
   if (interaction.commandName === "myirating") {
@@ -292,29 +604,48 @@ client.on("interactionCreate", async interaction => {
   if (interaction.commandName === "leaderboard") {
     await showLeaderboard(interaction);
   }
+
+  if (interaction.commandName === "stats") {
+    await showStats(interaction);
+  }
 });
+
+// ====================== STATS COMMAND ======================
+async function showStats(interaction) {
+  await interaction.deferReply();
+
+  try {
+    const drivers = loadLinkedDrivers();
+    const driver = drivers.find(d => d.discordId === interaction.user.id);
+
+    if (!driver) {
+      return interaction.editReply({ content: "❌ You are not linked yet. Use `/link` first!" });
+    }
+
+    const stats = await fetchDriverStats(driver);
+    const imageBuffer = renderStatsCard(stats);
+    const attachment = new AttachmentBuilder(imageBuffer, { name: "stats.png" });
+
+    await interaction.editReply({ files: [attachment] });
+  } catch (err) {
+    console.error("Stats error:", err);
+    await interaction.editReply({ content: "❌ Failed to load stats. Please try again." }).catch(() => {});
+  }
+}
 
 // ====================== LEADERBOARD ======================
 async function showLeaderboard(interactionOrChannel) {
-  // Determine if this is a slash command interaction or a channel (cron job)
   const isInteraction = !!(interactionOrChannel.deferReply);
 
   try {
     let drivers = loadLinkedDrivers();
     if (drivers.length === 0) {
-      if (isInteraction) {
-        return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
-      } else {
-        return interactionOrChannel.send({ content: "No drivers linked yet." });
-      }
+      if (isInteraction) return interactionOrChannel.reply({ content: "No drivers linked yet.", ephemeral: true });
+      return interactionOrChannel.send({ content: "No drivers linked yet." });
     }
 
-    // Defer immediately so Discord doesn't time out while we fetch iRatings
-    if (isInteraction) {
-      await interactionOrChannel.deferReply();
-    }
+    if (isInteraction) await interactionOrChannel.deferReply();
 
-    // Update iRatings
     for (const driver of drivers) {
       try {
         const ir = await getCurrentIRating(driver);
@@ -330,13 +661,9 @@ async function showLeaderboard(interactionOrChannel) {
     drivers.forEach((d, i) => d.lastRank = i + 1);
     saveLinkedDrivers(drivers);
 
-    // Determine embed color based on #1 change
     let embedColor = 0x00ff88;
-    if (drivers[0]?.lastChange > 0) {
-      embedColor = 0x00cc66;
-    } else if (drivers[0]?.lastChange < 0) {
-      embedColor = 0xff4444;
-    }
+    if (drivers[0]?.lastChange > 0) embedColor = 0x00cc66;
+    else if (drivers[0]?.lastChange < 0) embedColor = 0xff4444;
 
     const totalDrivers = drivers.length;
     const displayed = Math.min(drivers.length, 20);
@@ -348,23 +675,13 @@ async function showLeaderboard(interactionOrChannel) {
       .setTimestamp();
 
     drivers.slice(0, 20).forEach((d, i) => {
-      let rankDisplay = "";
-      if (i === 0) rankDisplay = "🥇";
-      else if (i === 1) rankDisplay = "🥈";
-      else if (i === 2) rankDisplay = "🥉";
-      else rankDisplay = `${i + 1}️⃣`;
-
+      let rankDisplay = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}️⃣`;
       let change = "";
       if (d.lastChange !== undefined) {
-        if (d.lastChange > 0) {
-          change = ` 🟢 **+${d.lastChange}** ⬆️`;
-        } else if (d.lastChange < 0) {
-          change = ` 🔴 **${d.lastChange}** ⬇️`;
-        } else {
-          change = ` ⚪ **0**`;
-        }
+        if (d.lastChange > 0) change = ` 🟢 **+${d.lastChange}** ⬆️`;
+        else if (d.lastChange < 0) change = ` 🔴 **${d.lastChange}** ⬇️`;
+        else change = ` ⚪ **0**`;
       }
-
       embed.addFields({
         name: `${rankDisplay} **${i + 1}.** ${d.iracingName || "Unknown"}`,
         value: `**${d.lastIRating ?? "??"}** iR${change}`,
@@ -378,16 +695,12 @@ async function showLeaderboard(interactionOrChannel) {
         : `Total drivers: ${totalDrivers}`
     });
 
-    if (isInteraction) {
-      await interactionOrChannel.editReply({ embeds: [embed] });
-    } else {
-      await interactionOrChannel.send({ embeds: [embed] });
-    }
+    if (isInteraction) await interactionOrChannel.editReply({ embeds: [embed] });
+    else await interactionOrChannel.send({ embeds: [embed] });
 
   } catch (err) {
     console.error("Leaderboard error:", err);
     if (isInteraction) {
-      // If we already deferred, use editReply — otherwise fall back to reply
       const respond = interactionOrChannel.deferred
         ? interactionOrChannel.editReply.bind(interactionOrChannel)
         : interactionOrChannel.reply.bind(interactionOrChannel);
@@ -401,9 +714,14 @@ const commands = [
   { name: "ping", description: "Test bot" },
   { name: "link", description: "Link iRacing account" },
   { name: "unlinkme", description: "Unlink yourself" },
-  { name: "unlink", description: "Admin: Unlink another driver", options: [{ name: "user", description: "User to unlink", type: 6, required: true }] },
+  {
+    name: "unlink",
+    description: "Admin: Unlink another driver",
+    options: [{ name: "user", description: "User to unlink", type: 6, required: true }]
+  },
   { name: "myirating", description: "Show your personal iRating" },
-  { name: "leaderboard", description: "Show GSR iRating Leaderboard" }
+  { name: "leaderboard", description: "Show GSR iRating Leaderboard" },
+  { name: "stats", description: "Show your Sports Car stats card" }
 ];
 
 const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
@@ -420,8 +738,8 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 client.login(DISCORD_TOKEN);
 
 // ====================== CRON ======================
-const { CronJob } = require('cron');
-new CronJob('0 12 * * *', async () => {
+const { CronJob } = require("cron");
+new CronJob("0 12 * * *", async () => {
   const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
   if (channel) await showLeaderboard(channel);
-}, null, true, 'America/Chicago');
+}, null, true, "America/Chicago");
