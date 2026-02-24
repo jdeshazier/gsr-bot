@@ -13,7 +13,7 @@ const fetch = require("node-fetch");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { createCanvas } = require("canvas");
+const { createCanvas } = require("@napi-rs/canvas"); // ← swapped from 'canvas'
 
 // ====================== ENV ======================
 const {
@@ -139,12 +139,6 @@ async function fetchDriverStats(user) {
     "https://members-ng.iracing.com/data/results/member_recent_races"
   );
 
-  // Member profile for SR and iR
-  const summaryData = await fetchIRacingData(
-    token,
-    "https://members-ng.iracing.com/data/member/info"
-  );
-
   // iR chart for change calculation (Sports Car = category 5)
   const irChartData = await fetchIRacingData(
     token,
@@ -174,14 +168,14 @@ async function fetchDriverStats(user) {
   let currentSR = 0;
   if (srChartData?.data?.length >= 2) {
     const pts = srChartData.data;
-    currentSR = pts[pts.length - 1].value / 100; // iRacing stores SR * 100
+    currentSR = pts[pts.length - 1].value / 100;
     srChange = (pts[pts.length - 1].value - pts[pts.length - 2].value) / 100;
   }
 
   // Current season stats: filter recent races to Sports Car (category 5)
   const seasonRaces = (recentData?.races || []).filter(r => r.category_id === 5);
   const seasonStarts = seasonRaces.length;
-  const seasonWins = seasonRaces.filter(r => r.winner_group_id === r.group_id || r.finish_position_in_class === 1).length;
+  const seasonWins = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
   const seasonPodiums = seasonRaces.filter(r => r.finish_position_in_class <= 3).length;
   const seasonPoles = seasonRaces.filter(r => r.starting_position_in_class === 1).length;
   const seasonLaps = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
@@ -196,11 +190,9 @@ async function fetchDriverStats(user) {
     ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts)
     : "N/A";
 
-  // iR percentile: rough estimate bucket based on iRating value
-  // iRacing doesn't expose percentile directly via API
+  // iR percentile: approximate bucket based on iRating value
   let irPercentile = null;
   if (currentIR > 0) {
-    // Approximate distribution: median Sports Car iR is ~1500, top 3.5% is ~4000+
     if (currentIR >= 6000) irPercentile = 99;
     else if (currentIR >= 5000) irPercentile = 98;
     else if (currentIR >= 4500) irPercentile = 97;
@@ -214,7 +206,6 @@ async function fetchDriverStats(user) {
     else irPercentile = 15;
   }
 
-  // SR letter class
   const srClass = currentSR >= 4.0 ? "A" : currentSR >= 3.0 ? "B" : currentSR >= 2.0 ? "C" : currentSR >= 1.0 ? "D" : "R";
 
   return {
@@ -225,7 +216,6 @@ async function fetchDriverStats(user) {
     currentSR: currentSR.toFixed(2),
     srClass,
     srChange: srChange.toFixed(2),
-    // Career
     career: {
       starts: sportsCar.starts ?? 0,
       wins: sportsCar.wins ?? 0,
@@ -240,7 +230,6 @@ async function fetchDriverStats(user) {
       podiumPct: sportsCar.starts > 0 ? Math.round(((sportsCar.top5 ?? 0) / sportsCar.starts) * 100) : 0,
       polePct: sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
     },
-    // Current season
     season: {
       starts: seasonStarts,
       wins: seasonWins,
@@ -269,7 +258,6 @@ function renderStatsCard(stats) {
   ctx.fillStyle = "#1a1a2e";
   ctx.fillRect(0, 0, W, H);
 
-  // Subtle gradient overlay
   const grad = ctx.createLinearGradient(0, 0, W, H);
   grad.addColorStop(0, "rgba(99, 102, 241, 0.08)");
   grad.addColorStop(1, "rgba(16, 185, 129, 0.08)");
@@ -278,8 +266,7 @@ function renderStatsCard(stats) {
 
   // ── Header Bar ──
   ctx.fillStyle = "#16213e";
-  roundRect(ctx, 0, 0, W, 80, { tl: 0, tr: 0, br: 0, bl: 0 });
-  ctx.fill();
+  ctx.fillRect(0, 0, W, 80);
 
   // SR Badge (top left)
   const srColor = getSRColor(stats.srClass);
@@ -314,12 +301,12 @@ function renderStatsCard(stats) {
 
   // ── iR / SR Change Pills ──
   const irChangeText = stats.irChange >= 0 ? `iR +${stats.irChange}` : `iR ${stats.irChange}`;
-  const srChangeText = stats.srChange >= 0 ? `SR +${stats.srChange}` : `SR ${stats.srChange}`;
+  const srChangeText = parseFloat(stats.srChange) >= 0 ? `SR +${stats.srChange}` : `SR ${stats.srChange}`;
   const irChangeColor = stats.irChange > 0 ? "#10b981" : stats.irChange < 0 ? "#ef4444" : "#6b7280";
   const srChangeColor = parseFloat(stats.srChange) > 0 ? "#10b981" : parseFloat(stats.srChange) < 0 ? "#ef4444" : "#6b7280";
 
-  drawPill(ctx, W - 18, 56, irChangeText, irChangeColor, "right");
-  drawPill(ctx, W - 18 - 90, 56, srChangeText, srChangeColor, "right");
+  drawPill(ctx, W - 18, 54, irChangeText, irChangeColor, "right");
+  drawPill(ctx, W - 18 - 95, 54, srChangeText, srChangeColor, "right");
 
   // ── Section Labels ──
   ctx.fillStyle = "#6366f1";
@@ -331,7 +318,13 @@ function renderStatsCard(stats) {
   ctx.textAlign = "right";
   ctx.fillText("CAREER", W - 30, 105);
 
-  // Divider
+  // Center divider label
+  ctx.fillStyle = "#4a5568";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("STAT", W / 2, 105);
+
+  // Divider line
   ctx.strokeStyle = "#2d3748";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -340,17 +333,16 @@ function renderStatsCard(stats) {
   ctx.stroke();
 
   // ── Stats Grid ──
-  // Each row: label | season value | career value
   const rows = [
-    { label: "Starts",         season: stats.season.starts,                          career: stats.career.starts },
-    { label: "Wins",           season: `${stats.season.wins} (${stats.season.winPct}%)`,    career: `${stats.career.wins} (${stats.career.winPct}%)` },
-    { label: "Podiums",        season: `${stats.season.podiums} (${stats.season.podiumPct}%)`, career: `${stats.career.top5} (${stats.career.podiumPct}%)` },
-    { label: "Poles",          season: `${stats.season.poles} (${stats.season.polePct}%)`,   career: `${stats.career.poles} (${stats.career.polePct}%)` },
-    { label: "Total Laps",     season: stats.season.laps,                            career: stats.career.laps },
-    { label: "Laps Led",       season: stats.season.lapsLed,                         career: stats.career.lapsLed },
-    { label: "Avg Start",      season: stats.season.avgStart,                        career: stats.career.avgStart },
-    { label: "Avg Finish",     season: stats.season.avgFinish,                       career: stats.career.avgFinish },
-    { label: "Avg Points",     season: stats.season.avgPoints,                       career: stats.career.avgPoints },
+    { label: "Starts",      season: stats.season.starts,                                  career: stats.career.starts },
+    { label: "Wins",        season: `${stats.season.wins} (${stats.season.winPct}%)`,     career: `${stats.career.wins} (${stats.career.winPct}%)` },
+    { label: "Podiums",     season: `${stats.season.podiums} (${stats.season.podiumPct}%)`, career: `${stats.career.top5} (${stats.career.podiumPct}%)` },
+    { label: "Poles",       season: `${stats.season.poles} (${stats.season.polePct}%)`,   career: `${stats.career.poles} (${stats.career.polePct}%)` },
+    { label: "Total Laps",  season: stats.season.laps,                                    career: stats.career.laps },
+    { label: "Laps Led",    season: stats.season.lapsLed,                                 career: stats.career.lapsLed },
+    { label: "Avg Start",   season: stats.season.avgStart,                                career: stats.career.avgStart },
+    { label: "Avg Finish",  season: stats.season.avgFinish,                               career: stats.career.avgFinish },
+    { label: "Avg Points",  season: stats.season.avgPoints,                               career: stats.career.avgPoints },
   ];
 
   const rowH = 34;
@@ -360,7 +352,7 @@ function renderStatsCard(stats) {
     const y = startY + i * rowH;
     const isEven = i % 2 === 0;
 
-    // Row background
+    // Alternating row background
     if (isEven) {
       ctx.fillStyle = "rgba(255,255,255,0.03)";
       roundRect(ctx, 18, y - 2, W - 36, rowH - 2, 6);
@@ -418,7 +410,7 @@ function drawPill(ctx, x, y, text, color, align = "left") {
   const pw = tw + padding * 2;
   const px = align === "right" ? x - pw : x;
 
-  ctx.fillStyle = color + "33"; // 20% opacity background
+  ctx.fillStyle = color + "33";
   roundRect(ctx, px, y, pw, 20, 10);
   ctx.fill();
 
