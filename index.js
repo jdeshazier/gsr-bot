@@ -35,19 +35,16 @@ if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
 }
 
 // ====================== FONT REGISTRATION ======================
-// Try system fonts first (available on Railway), fall back to downloading
 const SYSTEM_FONT_PATHS = [
-  // Railway / Debian system Poppins
   { regular: "/usr/share/fonts/truetype/google-fonts/Poppins-Regular.ttf",
     bold:    "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     name:    "Poppins" },
-  // DejaVu Sans — virtually always present on Linux
   { regular: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     bold:    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     name:    "DejaVu Sans" },
 ];
 
-let FONT_NAME = "Poppins"; // updated after registration
+let FONT_NAME = "Poppins";
 
 function registerFont() {
   for (const entry of SYSTEM_FONT_PATHS) {
@@ -63,7 +60,6 @@ function registerFont() {
       }
     }
   }
-  // Last resort: download Inter
   console.log("No system fonts found — downloading Inter as fallback...");
   downloadAndRegisterInter();
 }
@@ -71,12 +67,10 @@ function registerFont() {
 function downloadAndRegisterInter() {
   const regularPath = path.join(os.tmpdir(), "inter-regular.ttf");
   const boldPath    = path.join(os.tmpdir(), "inter-bold.ttf");
-
-  const downloads = [
+  const downloads   = [
     { url: "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Regular.ttf", dest: regularPath },
     { url: "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Bold.ttf",    dest: boldPath },
   ];
-
   let completed = 0;
   for (const dl of downloads) {
     if (fs.existsSync(dl.dest)) { completed++; continue; }
@@ -98,7 +92,7 @@ function downloadAndRegisterInter() {
 }
 
 // ====================== STORAGE ======================
-const DATA_DIR = "/app/data";
+const DATA_DIR   = "/app/data";
 const LINKED_FILE = path.join(DATA_DIR, "linked-drivers.json");
 
 function loadLinkedDrivers() {
@@ -138,8 +132,8 @@ async function getValidAccessToken(user) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: IRACING_CLIENT_ID,
+      grant_type:    "refresh_token",
+      client_id:     IRACING_CLIENT_ID,
       client_secret: maskedSecret,
       refresh_token: user.refreshToken
     })
@@ -147,24 +141,24 @@ async function getValidAccessToken(user) {
   if (!res.ok) throw new Error("Token refresh failed");
 
   const data = await res.json();
-  user.accessToken = data.access_token;
+  user.accessToken  = data.access_token;
   user.refreshToken = data.refresh_token || user.refreshToken;
-  user.expiresAt = Date.now() + data.expires_in * 1000;
+  user.expiresAt    = Date.now() + data.expires_in * 1000;
   return user.accessToken;
 }
 
 async function getCurrentIRating(user) {
   try {
-    const token = await getValidAccessToken(user);
+    const token   = await getValidAccessToken(user);
     const rootUrl = "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5";
     const rootRes = await fetch(rootUrl, { headers: { Authorization: `Bearer ${token}` } });
     if (!rootRes.ok) return null;
 
     const rootJson = await rootRes.json();
-    let chartUrl = rootUrl;
+    let chartUrl   = rootUrl;
     if (rootJson.link) chartUrl = rootJson.link;
 
-    const chartRes = await fetch(chartUrl);
+    const chartRes  = await fetch(chartUrl);
     if (!chartRes.ok) return null;
 
     const chartJson = await chartRes.json();
@@ -191,42 +185,37 @@ async function fetchIRacingData(token, url) {
 async function fetchDriverStats(user) {
   const token = await getValidAccessToken(user);
 
-  const careerData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career");
-  const recentData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/results/member_recent_races");
+  const careerData  = await fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career");
+  const recentData  = await fetchIRacingData(token, "https://members-ng.iracing.com/data/results/member_recent_races");
   const irChartData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5");
   const srChartData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=2&category_id=5");
 
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
 
-  let irChange = 0;
-  let currentIR = user.lastIRating ?? 0;
+  let irChange = 0, currentIR = user.lastIRating ?? 0;
   if (irChartData?.data?.length >= 2) {
     const pts = irChartData.data;
     currentIR = pts[pts.length - 1].value;
-    irChange = pts[pts.length - 1].value - pts[pts.length - 2].value;
+    irChange  = pts[pts.length - 1].value - pts[pts.length - 2].value;
   }
 
-  let srChange = 0;
-  let currentSR = 0;
+  let srChange = 0, currentSR = 0;
   if (srChartData?.data?.length >= 2) {
     const pts = srChartData.data;
     currentSR = pts[pts.length - 1].value / 100;
-    srChange = (pts[pts.length - 1].value - pts[pts.length - 2].value) / 100;
+    srChange  = (pts[pts.length - 1].value - pts[pts.length - 2].value) / 100;
   }
 
-  const seasonRaces = (recentData?.races || []).filter(r => r.category_id === 5);
-  const seasonStarts = seasonRaces.length;
-  const seasonWins = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
-  const seasonPodiums = seasonRaces.filter(r => r.finish_position_in_class <= 3).length;
-  const seasonPoles = seasonRaces.filter(r => r.starting_position_in_class === 1).length;
-  const seasonLaps = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
-  const seasonLapsLed = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
-  const seasonAvgStart = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.starting_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
-  const seasonAvgFinish = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.finish_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
-  const seasonAvgPoints = seasonStarts > 0
-    ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts) : "N/A";
+  const seasonRaces    = (recentData?.races || []).filter(r => r.category_id === 5);
+  const seasonStarts   = seasonRaces.length;
+  const seasonWins     = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
+  const seasonPodiums  = seasonRaces.filter(r => r.finish_position_in_class <= 3).length;
+  const seasonPoles    = seasonRaces.filter(r => r.starting_position_in_class === 1).length;
+  const seasonLaps     = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
+  const seasonLapsLed  = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
+  const seasonAvgStart  = seasonStarts > 0 ? (seasonRaces.reduce((a, r) => a + (r.starting_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
+  const seasonAvgFinish = seasonStarts > 0 ? (seasonRaces.reduce((a, r) => a + (r.finish_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
+  const seasonAvgPoints = seasonStarts > 0 ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts) : "N/A";
 
   let irPercentile = null;
   if (currentIR > 0) {
@@ -247,20 +236,12 @@ async function fetchDriverStats(user) {
 
   return {
     name: user.iracingName,
-    currentIR,
-    irChange,
-    irPercentile,
-    currentSR: currentSR.toFixed(2),
-    srClass,
-    srChange: srChange.toFixed(2),
+    currentIR, irChange, irPercentile,
+    currentSR: currentSR.toFixed(2), srClass, srChange: srChange.toFixed(2),
     career: {
-      starts:    sportsCar.starts ?? 0,
-      wins:      sportsCar.wins ?? 0,
-      top5:      sportsCar.top5 ?? 0,
-      poles:     sportsCar.poles ?? 0,
-      laps:      sportsCar.laps_complete ?? 0,
-      lapsLed:   sportsCar.laps_led ?? 0,
-      avgStart:  sportsCar.avg_start_position?.toFixed(2) ?? "N/A",
+      starts: sportsCar.starts ?? 0, wins: sportsCar.wins ?? 0, top5: sportsCar.top5 ?? 0,
+      poles: sportsCar.poles ?? 0, laps: sportsCar.laps_complete ?? 0, lapsLed: sportsCar.laps_led ?? 0,
+      avgStart:  sportsCar.avg_start_position?.toFixed(2)  ?? "N/A",
       avgFinish: sportsCar.avg_finish_position?.toFixed(2) ?? "N/A",
       avgPoints: sportsCar.avg_champ_points ? Math.round(sportsCar.avg_champ_points) : "N/A",
       winPct:    sportsCar.starts > 0 ? Math.round((sportsCar.wins / sportsCar.starts) * 100) : 0,
@@ -268,15 +249,9 @@ async function fetchDriverStats(user) {
       polePct:   sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
     },
     season: {
-      starts:    seasonStarts,
-      wins:      seasonWins,
-      podiums:   seasonPodiums,
-      poles:     seasonPoles,
-      laps:      seasonLaps,
-      lapsLed:   seasonLapsLed,
-      avgStart:  seasonAvgStart,
-      avgFinish: seasonAvgFinish,
-      avgPoints: seasonAvgPoints,
+      starts: seasonStarts, wins: seasonWins, podiums: seasonPodiums, poles: seasonPoles,
+      laps: seasonLaps, lapsLed: seasonLapsLed,
+      avgStart: seasonAvgStart, avgFinish: seasonAvgFinish, avgPoints: seasonAvgPoints,
       winPct:    seasonStarts > 0 ? Math.round((seasonWins    / seasonStarts) * 100) : 0,
       podiumPct: seasonStarts > 0 ? Math.round((seasonPodiums / seasonStarts) * 100) : 0,
       polePct:   seasonStarts > 0 ? Math.round((seasonPoles   / seasonStarts) * 100) : 0,
@@ -286,13 +261,11 @@ async function fetchDriverStats(user) {
 
 // ====================== STATS CARD RENDERER ======================
 function renderStatsCard(stats) {
-  const W = 780;
-  const H = 460;
+  const W = 780, H = 460;
   const canvas = createCanvas(W, H);
-  const ctx = canvas.getContext("2d");
-  const F = FONT_NAME; // whichever font got registered
+  const ctx    = canvas.getContext("2d");
+  const F      = FONT_NAME;
 
-  // ── Background ──
   ctx.fillStyle = "#1a1a2e";
   ctx.fillRect(0, 0, W, H);
 
@@ -302,11 +275,9 @@ function renderStatsCard(stats) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
 
-  // ── Header Bar ──
   ctx.fillStyle = "#16213e";
   ctx.fillRect(0, 0, W, 80);
 
-  // SR Badge (top left)
   const srColor = getSRColor(stats.srClass);
   ctx.fillStyle = srColor;
   roundRect(ctx, 18, 18, 72, 44, 8);
@@ -318,18 +289,15 @@ function renderStatsCard(stats) {
   ctx.font = `bold 13px "${F}"`;
   ctx.fillText(stats.currentIR.toLocaleString(), 54, 54);
 
-  // Driver name
   ctx.fillStyle = "#ffffff";
   ctx.font = `bold 28px "${F}"`;
   ctx.textAlign = "center";
   ctx.fillText(stats.name, W / 2, 42);
 
-  // Subtitle
   ctx.fillStyle = "#a0aec0";
   ctx.font = `14px "${F}"`;
   ctx.fillText("Sports Car · 2026 Season 1", W / 2, 64);
 
-  // iR Percentile (top right)
   if (stats.irPercentile !== null) {
     ctx.fillStyle = "#a0aec0";
     ctx.font = `12px "${F}"`;
@@ -337,7 +305,6 @@ function renderStatsCard(stats) {
     ctx.fillText(`top ${100 - stats.irPercentile + 1}% of Sports Car drivers`, W - 18, 36);
   }
 
-  // ── iR / SR Change Pills ──
   const irChangeText  = stats.irChange >= 0 ? `iR +${stats.irChange}` : `iR ${stats.irChange}`;
   const srChangeText  = parseFloat(stats.srChange) >= 0 ? `SR +${stats.srChange}` : `SR ${stats.srChange}`;
   const irChangeColor = stats.irChange > 0 ? "#10b981" : stats.irChange < 0 ? "#ef4444" : "#6b7280";
@@ -346,13 +313,10 @@ function renderStatsCard(stats) {
   drawPill(ctx, W - 18,      54, irChangeText, irChangeColor, "right", F);
   drawPill(ctx, W - 18 - 95, 54, srChangeText, srChangeColor, "right", F);
 
-  // ── Section Labels ──
   ctx.fillStyle = "#6366f1";
   ctx.font = `bold 12px "${F}"`;
   ctx.textAlign = "left";
   ctx.fillText("CURRENT SEASON", 30, 105);
-
-  ctx.fillStyle = "#6366f1";
   ctx.textAlign = "right";
   ctx.fillText("CAREER", W - 30, 105);
 
@@ -361,7 +325,6 @@ function renderStatsCard(stats) {
   ctx.textAlign = "center";
   ctx.fillText("STAT", W / 2, 105);
 
-  // Divider
   ctx.strokeStyle = "#2d3748";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -369,7 +332,6 @@ function renderStatsCard(stats) {
   ctx.lineTo(W - 30, 112);
   ctx.stroke();
 
-  // ── Stats Grid ──
   const rows = [
     { label: "Starts",     season: stats.season.starts,                                    career: stats.career.starts },
     { label: "Wins",       season: `${stats.season.wins} (${stats.season.winPct}%)`,       career: `${stats.career.wins} (${stats.career.winPct}%)` },
@@ -382,33 +344,26 @@ function renderStatsCard(stats) {
     { label: "Avg Points", season: stats.season.avgPoints,                                 career: stats.career.avgPoints },
   ];
 
-  const rowH   = 34;
-  const startY = 128;
-
+  const rowH = 34, startY = 128;
   rows.forEach((row, i) => {
     const y = startY + i * rowH;
-
     if (i % 2 === 0) {
       ctx.fillStyle = "rgba(255,255,255,0.03)";
       roundRect(ctx, 18, y - 2, W - 36, rowH - 2, 6);
       ctx.fill();
     }
-
     ctx.fillStyle = "#a0aec0";
     ctx.font = `13px "${F}"`;
     ctx.textAlign = "center";
     ctx.fillText(row.label, W / 2, y + 18);
-
     ctx.fillStyle = "#ffffff";
     ctx.font = `bold 15px "${F}"`;
     ctx.textAlign = "left";
     ctx.fillText(String(row.season), 36, y + 19);
-
     ctx.textAlign = "right";
     ctx.fillText(String(row.career), W - 36, y + 19);
   });
 
-  // ── Footer ──
   ctx.fillStyle = "#2d3748";
   ctx.fillRect(0, H - 28, W, 28);
   ctx.fillStyle = "#718096";
@@ -419,7 +374,6 @@ function renderStatsCard(stats) {
   return canvas.toBuffer("image/png");
 }
 
-// ── Canvas helpers ──
 function roundRect(ctx, x, y, w, h, r) {
   if (typeof r === "number") r = { tl: r, tr: r, br: r, bl: r };
   ctx.beginPath();
@@ -441,11 +395,9 @@ function drawPill(ctx, x, y, text, color, align = "left", fontName = "sans-serif
   const tw = ctx.measureText(text).width;
   const pw = tw + padding * 2;
   const px = align === "right" ? x - pw : x;
-
   ctx.fillStyle = color + "33";
   roundRect(ctx, px, y, pw, 20, 10);
   ctx.fill();
-
   ctx.fillStyle = color;
   ctx.textAlign = align === "right" ? "right" : "left";
   ctx.fillText(text, align === "right" ? x - padding : x + padding, y + 14);
@@ -463,22 +415,19 @@ function getSRColor(srClass) {
 
 // ====================== EXPRESS ======================
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT         = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL     = "https://oauth.iracing.com/oauth2/token";
-
-const pkceStore   = {};
-const TEN_MINUTES = 10 * 60 * 1000;
+const pkceStore     = {};
+const TEN_MINUTES   = 10 * 60 * 1000;
 
 app.get("/oauth/login", (req, res) => {
-  const state = req.query.state || "unknown";
-
+  const state         = req.query.state || "unknown";
   const codeVerifier  = crypto.randomBytes(64).toString("hex");
   const hash          = crypto.createHash("sha256").update(codeVerifier).digest("base64");
   const codeChallenge = hash.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
   pkceStore[state] = { verifier: codeVerifier, createdAt: Date.now() };
-
   for (const key of Object.keys(pkceStore)) {
     if (Date.now() - pkceStore[key].createdAt > TEN_MINUTES) delete pkceStore[key];
   }
@@ -489,7 +438,7 @@ app.get("/oauth/login", (req, res) => {
 });
 
 app.get("/oauth/callback", async (req, res) => {
-  const code = req.query.code;
+  const code      = req.query.code;
   if (!code) return res.status(400).send("Missing authorization code.");
 
   const discordId = req.query.state || "unknown";
@@ -502,20 +451,17 @@ app.get("/oauth/callback", async (req, res) => {
   try {
     const maskedSecret = maskSecret(IRACING_CLIENT_SECRET, IRACING_CLIENT_ID);
     const body = new URLSearchParams({
-      grant_type:    "authorization_code",
-      client_id:     IRACING_CLIENT_ID,
-      client_secret: maskedSecret,
-      code,
-      redirect_uri:  IRACING_REDIRECT_URI,
-      code_verifier: pkceEntry.verifier
+      grant_type: "authorization_code", client_id: IRACING_CLIENT_ID,
+      client_secret: maskedSecret, code,
+      redirect_uri: IRACING_REDIRECT_URI, code_verifier: pkceEntry.verifier
     });
 
     const tokenRes  = await fetch(TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || tokenData.error) return res.status(400).send(`OAuth Error: ${tokenData.error || "Unknown"}`);
 
-    const profileRes  = await fetch("https://oauth.iracing.com/oauth2/iracing/profile", { headers: { Authorization: `Bearer ${tokenData.access_token}` } });
-    let iracingName   = "Unknown";
+    const profileRes = await fetch("https://oauth.iracing.com/oauth2/iracing/profile", { headers: { Authorization: `Bearer ${tokenData.access_token}` } });
+    let iracingName  = "Unknown";
     if (profileRes.ok) {
       const profileJson = await profileRes.json();
       if (profileJson.iracing_name) {
@@ -566,6 +512,7 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: "You were not linked.", ephemeral: true });
   }
 
+  // ── /unlink — remove by Discord user picker (must be in server) ──
   if (interaction.commandName === "unlink") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Only administrators can use this command.", ephemeral: true });
@@ -578,9 +525,49 @@ client.on("interactionCreate", async interaction => {
     drivers = drivers.filter(d => d.discordId !== target.id);
     if (drivers.length < initial) {
       saveLinkedDrivers(drivers);
-      return interaction.reply(`✅ Successfully unlinked **${target.tag}**.`);
+      return interaction.reply({ content: `✅ Successfully unlinked **${target.tag}**.`, ephemeral: true });
     }
     return interaction.reply({ content: "That user was not linked.", ephemeral: true });
+  }
+
+  // ── /unlinkname — remove by iRacing name (works even after leaving server) ──
+  if (interaction.commandName === "unlinkname") {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return interaction.reply({ content: "❌ Only administrators can use this command.", ephemeral: true });
+    }
+
+    const inputName = interaction.options.getString("name").trim().toLowerCase();
+    let drivers     = loadLinkedDrivers();
+
+    // Find all drivers whose iRacing name matches (case-insensitive)
+    const matches = drivers.filter(d => d.iracingName?.toLowerCase().includes(inputName));
+
+    if (matches.length === 0) {
+      // Show the full list of linked drivers to help the admin
+      const names = drivers.map((d, i) => `${i + 1}. ${d.iracingName}`).join("\n") || "None";
+      return interaction.reply({
+        content: `❌ No driver found matching **"${inputName}"**.\n\nCurrently linked drivers:\n\`\`\`\n${names}\n\`\`\``,
+        ephemeral: true
+      });
+    }
+
+    if (matches.length > 1) {
+      const names = matches.map(d => d.iracingName).join("\n");
+      return interaction.reply({
+        content: `⚠️ Multiple drivers match **"${inputName}"**. Please be more specific:\n\`\`\`\n${names}\n\`\`\``,
+        ephemeral: true
+      });
+    }
+
+    // Exactly one match — remove them
+    const removed = matches[0];
+    drivers = drivers.filter(d => d.discordId !== removed.discordId);
+    saveLinkedDrivers(drivers);
+
+    return interaction.reply({
+      content: `✅ Successfully unlinked **${removed.iracingName}**.`,
+      ephemeral: true
+    });
   }
 
   if (interaction.commandName === "myirating") {
@@ -598,10 +585,10 @@ client.on("interactionCreate", async interaction => {
       .setTitle("📊 Your iRating")
       .setColor(0x00ff88)
       .addFields(
-        { name: "iRacing Name",  value: driver.iracingName || "Unknown", inline: true },
-        { name: "Current iRating", value: current.toString(),            inline: true },
-        { name: "Change",        value: changeText,                      inline: true },
-        { name: "Current Rank",  value: driver.lastRank ? `#${driver.lastRank}` : "Not ranked yet", inline: true }
+        { name: "iRacing Name",   value: driver.iracingName || "Unknown", inline: true },
+        { name: "Current iRating", value: current.toString(),             inline: true },
+        { name: "Change",         value: changeText,                      inline: true },
+        { name: "Current Rank",   value: driver.lastRank ? `#${driver.lastRank}` : "Not ranked yet", inline: true }
       )
       .setTimestamp();
 
@@ -620,7 +607,7 @@ async function showStats(interaction) {
     const driver  = drivers.find(d => d.discordId === interaction.user.id);
     if (!driver) return interaction.editReply({ content: "❌ You are not linked yet. Use `/link` first!" });
 
-    const stats      = await fetchDriverStats(driver);
+    const stats       = await fetchDriverStats(driver);
     const imageBuffer = renderStatsCard(stats);
     const attachment  = new AttachmentBuilder(imageBuffer, { name: "stats.png" });
 
@@ -648,7 +635,7 @@ async function showLeaderboard(interactionOrChannel) {
       try {
         const ir = await getCurrentIRating(driver);
         if (ir !== null) {
-          const old = driver.lastIRating ?? ir;
+          const old      = driver.lastIRating ?? ir;
           driver.lastIRating = ir;
           driver.lastChange  = ir - old;
         }
@@ -660,7 +647,7 @@ async function showLeaderboard(interactionOrChannel) {
     saveLinkedDrivers(drivers);
 
     let embedColor = 0x00ff88;
-    if (drivers[0]?.lastChange > 0) embedColor = 0x00cc66;
+    if      (drivers[0]?.lastChange > 0) embedColor = 0x00cc66;
     else if (drivers[0]?.lastChange < 0) embedColor = 0xff4444;
 
     const totalDrivers = drivers.length;
@@ -712,8 +699,21 @@ const commands = [
   { name: "ping",        description: "Test bot" },
   { name: "link",        description: "Link iRacing account" },
   { name: "unlinkme",    description: "Unlink yourself" },
-  { name: "unlink",      description: "Admin: Unlink another driver",
-    options: [{ name: "user", description: "User to unlink", type: 6, required: true }] },
+  {
+    name: "unlink",
+    description: "Admin: Unlink a driver who is still in the server",
+    options: [{ name: "user", description: "User to unlink", type: 6, required: true }]
+  },
+  {
+    name: "unlinkname",
+    description: "Admin: Unlink a driver by iRacing name (use when they've left the server)",
+    options: [{
+      name:        "name",
+      description: "Full or partial iRacing name (e.g. 'Jesse D.' or just 'Jesse')",
+      type:        3, // STRING
+      required:    true
+    }]
+  },
   { name: "myirating",   description: "Show your personal iRating" },
   { name: "leaderboard", description: "Show GSR iRating Leaderboard" },
   { name: "stats",       description: "Show your Sports Car stats card" }
