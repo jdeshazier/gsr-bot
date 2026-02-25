@@ -13,9 +13,7 @@ const fetch = require("node-fetch");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
-const https = require("https");
-const { createCanvas, GlobalFonts } = require("@napi-rs/canvas");
+const puppeteer = require("puppeteer");
 
 // ====================== ENV ======================
 const {
@@ -34,65 +32,8 @@ if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
   process.exit(1);
 }
 
-// ====================== FONT REGISTRATION ======================
-const SYSTEM_FONT_PATHS = [
-  { regular: "/usr/share/fonts/truetype/google-fonts/Poppins-Regular.ttf",
-    bold:    "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
-    name:    "Poppins" },
-  { regular: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    bold:    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    name:    "DejaVu Sans" },
-];
-
-let FONT_NAME = "Poppins";
-
-function registerFont() {
-  for (const entry of SYSTEM_FONT_PATHS) {
-    if (fs.existsSync(entry.regular) && fs.existsSync(entry.bold)) {
-      try {
-        GlobalFonts.registerFromPath(entry.regular, entry.name);
-        GlobalFonts.registerFromPath(entry.bold, entry.name);
-        FONT_NAME = entry.name;
-        console.log(`✅ Fonts registered: ${entry.name}`);
-        return;
-      } catch (e) {
-        console.warn(`Font registration failed for ${entry.name}:`, e.message);
-      }
-    }
-  }
-  console.log("No system fonts found — downloading Inter as fallback...");
-  downloadAndRegisterInter();
-}
-
-function downloadAndRegisterInter() {
-  const regularPath = path.join(os.tmpdir(), "inter-regular.ttf");
-  const boldPath    = path.join(os.tmpdir(), "inter-bold.ttf");
-  const downloads   = [
-    { url: "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Regular.ttf", dest: regularPath },
-    { url: "https://github.com/rsms/inter/raw/master/docs/font-files/Inter-Bold.ttf",    dest: boldPath },
-  ];
-  let completed = 0;
-  for (const dl of downloads) {
-    if (fs.existsSync(dl.dest)) { completed++; continue; }
-    const file = fs.createWriteStream(dl.dest);
-    https.get(dl.url, res => {
-      res.pipe(file);
-      file.on("finish", () => {
-        file.close();
-        completed++;
-        if (completed === downloads.length) {
-          GlobalFonts.registerFromPath(regularPath, "Inter");
-          GlobalFonts.registerFromPath(boldPath,    "Inter");
-          FONT_NAME = "Inter";
-          console.log("✅ Inter fonts downloaded and registered.");
-        }
-      });
-    }).on("error", err => console.error("Font download error:", err.message));
-  }
-}
-
 // ====================== STORAGE ======================
-const DATA_DIR   = "/app/data";
+const DATA_DIR    = "/app/data";
 const LINKED_FILE = path.join(DATA_DIR, "linked-drivers.json");
 
 function loadLinkedDrivers() {
@@ -259,78 +200,24 @@ async function fetchDriverStats(user) {
   };
 }
 
-// ====================== STATS CARD RENDERER ======================
-function renderStatsCard(stats) {
-  const W = 780, H = 460;
-  const canvas = createCanvas(W, H);
-  const ctx    = canvas.getContext("2d");
-  const F      = FONT_NAME;
-
-  ctx.fillStyle = "#1a1a2e";
-  ctx.fillRect(0, 0, W, H);
-
-  const grad = ctx.createLinearGradient(0, 0, W, H);
-  grad.addColorStop(0, "rgba(99, 102, 241, 0.08)");
-  grad.addColorStop(1, "rgba(16, 185, 129, 0.08)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, W, H);
-
-  ctx.fillStyle = "#16213e";
-  ctx.fillRect(0, 0, W, 80);
-
-  const srColor = getSRColor(stats.srClass);
-  ctx.fillStyle = srColor;
-  roundRect(ctx, 18, 18, 72, 44, 8);
-  ctx.fill();
-  ctx.fillStyle = "#fff";
-  ctx.font = `11px "${F}"`;
-  ctx.textAlign = "center";
-  ctx.fillText(stats.srClass + " " + stats.currentSR, 54, 36);
-  ctx.font = `bold 13px "${F}"`;
-  ctx.fillText(stats.currentIR.toLocaleString(), 54, 54);
-
-  ctx.fillStyle = "#ffffff";
-  ctx.font = `bold 28px "${F}"`;
-  ctx.textAlign = "center";
-  ctx.fillText(stats.name, W / 2, 42);
-
-  ctx.fillStyle = "#a0aec0";
-  ctx.font = `14px "${F}"`;
-  ctx.fillText("Sports Car · 2026 Season 1", W / 2, 64);
-
-  if (stats.irPercentile !== null) {
-    ctx.fillStyle = "#a0aec0";
-    ctx.font = `12px "${F}"`;
-    ctx.textAlign = "right";
-    ctx.fillText(`top ${100 - stats.irPercentile + 1}% of Sports Car drivers`, W - 18, 36);
+// ====================== STATS CARD HTML ======================
+function getSRColor(srClass) {
+  switch (srClass) {
+    case "A": return "#10b981";
+    case "B": return "#3b82f6";
+    case "C": return "#f59e0b";
+    case "D": return "#f97316";
+    default:  return "#6b7280";
   }
+}
 
-  const irChangeText  = stats.irChange >= 0 ? `iR +${stats.irChange}` : `iR ${stats.irChange}`;
-  const srChangeText  = parseFloat(stats.srChange) >= 0 ? `SR +${stats.srChange}` : `SR ${stats.srChange}`;
-  const irChangeColor = stats.irChange > 0 ? "#10b981" : stats.irChange < 0 ? "#ef4444" : "#6b7280";
-  const srChangeColor = parseFloat(stats.srChange) > 0 ? "#10b981" : parseFloat(stats.srChange) < 0 ? "#ef4444" : "#6b7280";
-
-  drawPill(ctx, W - 18,      54, irChangeText, irChangeColor, "right", F);
-  drawPill(ctx, W - 18 - 95, 54, srChangeText, srChangeColor, "right", F);
-
-  ctx.fillStyle = "#6366f1";
-  ctx.font = `bold 12px "${F}"`;
-  ctx.textAlign = "left";
-  ctx.fillText("CURRENT SEASON", 30, 105);
-  ctx.textAlign = "right";
-  ctx.fillText("CAREER", W - 30, 105);
-
-  ctx.fillStyle = "#4a5568";
-  ctx.font = `11px "${F}"`;
-  ctx.textAlign = "center";
-  ctx.fillText("STAT", W / 2, 105);
-
-  ctx.strokeStyle = "#2d3748";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(30, 112);
-  ctx.lineTo(W - 30, 112);
-  ctx.stroke();
+function buildStatsHTML(stats) {
+  const srColor      = getSRColor(stats.srClass);
+  const irChangeText = stats.irChange >= 0 ? `+${stats.irChange}` : `${stats.irChange}`;
+  const srChangeText = parseFloat(stats.srChange) >= 0 ? `+${stats.srChange}` : `${stats.srChange}`;
+  const irChangeCss  = stats.irChange > 0 ? "positive" : stats.irChange < 0 ? "negative" : "neutral";
+  const srChangeCss  = parseFloat(stats.srChange) > 0 ? "positive" : parseFloat(stats.srChange) < 0 ? "negative" : "neutral";
+  const topPct       = stats.irPercentile !== null ? `top ${100 - stats.irPercentile + 1}% of Sports Car drivers` : "";
 
   const rows = [
     { label: "Starts",     season: stats.season.starts,                                    career: stats.career.starts },
@@ -344,78 +231,222 @@ function renderStatsCard(stats) {
     { label: "Avg Points", season: stats.season.avgPoints,                                 career: stats.career.avgPoints },
   ];
 
-  const rowH = 34, startY = 128;
-  rows.forEach((row, i) => {
-    const y = startY + i * rowH;
-    if (i % 2 === 0) {
-      ctx.fillStyle = "rgba(255,255,255,0.03)";
-      roundRect(ctx, 18, y - 2, W - 36, rowH - 2, 6);
-      ctx.fill();
-    }
-    ctx.fillStyle = "#a0aec0";
-    ctx.font = `13px "${F}"`;
-    ctx.textAlign = "center";
-    ctx.fillText(row.label, W / 2, y + 18);
-    ctx.fillStyle = "#ffffff";
-    ctx.font = `bold 15px "${F}"`;
-    ctx.textAlign = "left";
-    ctx.fillText(String(row.season), 36, y + 19);
-    ctx.textAlign = "right";
-    ctx.fillText(String(row.career), W - 36, y + 19);
+  const rowsHTML = rows.map((row, i) => `
+    <div class="row ${i % 2 === 0 ? "row-even" : ""}">
+      <div class="cell cell-value">${row.season}</div>
+      <div class="cell cell-label">${row.label}</div>
+      <div class="cell cell-value">${row.career}</div>
+    </div>
+  `).join("");
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 780px;
+    height: 460px;
+    background: #1a1a2e;
+    font-family: 'Inter', 'Arial', sans-serif;
+    color: #fff;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .bg-gradient {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(16,185,129,0.08) 100%);
+  }
+
+  .header {
+    position: relative;
+    background: #16213e;
+    height: 80px;
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+  }
+
+  .sr-badge {
+    background: ${srColor};
+    border-radius: 8px;
+    width: 72px;
+    height: 44px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .sr-badge .sr-label { font-size: 11px; font-weight: 600; }
+  .sr-badge .ir-val   { font-size: 13px; font-weight: 700; }
+
+  .header-center {
+    flex: 1;
+    text-align: center;
+  }
+  .driver-name { font-size: 28px; font-weight: 700; line-height: 1.1; }
+  .subtitle    { font-size: 14px; color: #a0aec0; margin-top: 2px; }
+
+  .header-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    min-width: 160px;
+  }
+  .percentile { font-size: 12px; color: #a0aec0; }
+
+  .pills { display: flex; gap: 8px; }
+  .pill {
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .pill.positive { background: rgba(16,185,129,0.2); color: #10b981; }
+  .pill.negative { background: rgba(239,68,68,0.2);  color: #ef4444; }
+  .pill.neutral  { background: rgba(107,114,128,0.2); color: #9ca3af; }
+
+  .content {
+    position: relative;
+    padding: 0 18px;
+  }
+
+  .section-headers {
+    display: flex;
+    align-items: center;
+    padding: 10px 18px 6px;
+    position: relative;
+  }
+  .section-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #6366f1;
+    letter-spacing: 0.05em;
+  }
+  .section-label.right { margin-left: auto; }
+  .section-center {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: #4a5568;
+    letter-spacing: 0.08em;
+  }
+
+  .divider {
+    height: 1px;
+    background: #2d3748;
+    margin: 0 18px;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    height: 34px;
+    padding: 0 18px;
+    border-radius: 6px;
+  }
+  .row-even { background: rgba(255,255,255,0.03); }
+
+  .cell { flex: 1; font-size: 15px; font-weight: 700; color: #fff; }
+  .cell-label {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 400;
+    color: #a0aec0;
+  }
+  .cell:last-child { text-align: right; }
+
+  .footer {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 28px;
+    background: #2d3748;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: #718096;
+  }
+</style>
+</head>
+<body>
+  <div class="bg-gradient"></div>
+
+  <div class="header">
+    <div class="sr-badge">
+      <span class="sr-label">${stats.srClass} ${stats.currentSR}</span>
+      <span class="ir-val">${stats.currentIR.toLocaleString()}</span>
+    </div>
+
+    <div class="header-center">
+      <div class="driver-name">${stats.name}</div>
+      <div class="subtitle">Sports Car &middot; 2026 Season 1</div>
+    </div>
+
+    <div class="header-right">
+      <div class="percentile">${topPct}</div>
+      <div class="pills">
+        <div class="pill ${srChangeCss}">SR ${srChangeText}</div>
+        <div class="pill ${irChangeCss}">iR ${irChangeText}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-headers">
+    <span class="section-label">CURRENT SEASON</span>
+    <span class="section-center">STAT</span>
+    <span class="section-label right">CAREER</span>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="content">
+    ${rowsHTML}
+  </div>
+
+  <div class="footer">GSR &middot; iRacing Sports Car Stats &middot; Data via iRacing Members API</div>
+</body>
+</html>`;
+}
+
+// ====================== PUPPETEER SCREENSHOT ======================
+async function renderStatsCard(stats) {
+  const html     = buildStatsHTML(stats);
+  const browser  = await puppeteer.launch({
+    headless: "new",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu"
+    ]
   });
 
-  ctx.fillStyle = "#2d3748";
-  ctx.fillRect(0, H - 28, W, 28);
-  ctx.fillStyle = "#718096";
-  ctx.font = `11px "${F}"`;
-  ctx.textAlign = "center";
-  ctx.fillText("GSR · iRacing Sports Car Stats · Data via iRacing Members API", W / 2, H - 10);
-
-  return canvas.toBuffer("image/png");
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  if (typeof r === "number") r = { tl: r, tr: r, br: r, bl: r };
-  ctx.beginPath();
-  ctx.moveTo(x + r.tl, y);
-  ctx.lineTo(x + w - r.tr, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r.tr);
-  ctx.lineTo(x + w, y + h - r.br);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r.br, y + h);
-  ctx.lineTo(x + r.bl, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r.bl);
-  ctx.lineTo(x, y + r.tl);
-  ctx.quadraticCurveTo(x, y, x + r.tl, y);
-  ctx.closePath();
-}
-
-function drawPill(ctx, x, y, text, color, align = "left", fontName = "sans-serif") {
-  const padding = 10;
-  ctx.font = `bold 12px "${fontName}"`;
-  const tw = ctx.measureText(text).width;
-  const pw = tw + padding * 2;
-  const px = align === "right" ? x - pw : x;
-  ctx.fillStyle = color + "33";
-  roundRect(ctx, px, y, pw, 20, 10);
-  ctx.fill();
-  ctx.fillStyle = color;
-  ctx.textAlign = align === "right" ? "right" : "left";
-  ctx.fillText(text, align === "right" ? x - padding : x + padding, y + 14);
-}
-
-function getSRColor(srClass) {
-  switch (srClass) {
-    case "A": return "#10b981";
-    case "B": return "#3b82f6";
-    case "C": return "#f59e0b";
-    case "D": return "#f97316";
-    default:  return "#6b7280";
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 780, height: 460, deviceScaleFactor: 2 });
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    const buffer = await page.screenshot({ type: "png" });
+    return buffer;
+  } finally {
+    await browser.close();
   }
 }
 
 // ====================== EXPRESS ======================
 const app = express();
-const PORT         = process.env.PORT || 3000;
+const PORT          = process.env.PORT || 3000;
 const AUTHORIZE_URL = "https://oauth.iracing.com/oauth2/authorize";
 const TOKEN_URL     = "https://oauth.iracing.com/oauth2/token";
 const pkceStore     = {};
@@ -512,7 +543,6 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: "You were not linked.", ephemeral: true });
   }
 
-  // ── /unlink — remove by Discord user picker (must be in server) ──
   if (interaction.commandName === "unlink") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Only administrators can use this command.", ephemeral: true });
@@ -530,7 +560,6 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: "That user was not linked.", ephemeral: true });
   }
 
-  // ── /unlinkname — remove by iRacing name (works even after leaving server) ──
   if (interaction.commandName === "unlinkname") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Only administrators can use this command.", ephemeral: true });
@@ -538,12 +567,9 @@ client.on("interactionCreate", async interaction => {
 
     const inputName = interaction.options.getString("name").trim().toLowerCase();
     let drivers     = loadLinkedDrivers();
-
-    // Find all drivers whose iRacing name matches (case-insensitive)
-    const matches = drivers.filter(d => d.iracingName?.toLowerCase().includes(inputName));
+    const matches   = drivers.filter(d => d.iracingName?.toLowerCase().includes(inputName));
 
     if (matches.length === 0) {
-      // Show the full list of linked drivers to help the admin
       const names = drivers.map((d, i) => `${i + 1}. ${d.iracingName}`).join("\n") || "None";
       return interaction.reply({
         content: `❌ No driver found matching **"${inputName}"**.\n\nCurrently linked drivers:\n\`\`\`\n${names}\n\`\`\``,
@@ -559,15 +585,10 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    // Exactly one match — remove them
     const removed = matches[0];
     drivers = drivers.filter(d => d.discordId !== removed.discordId);
     saveLinkedDrivers(drivers);
-
-    return interaction.reply({
-      content: `✅ Successfully unlinked **${removed.iracingName}**.`,
-      ephemeral: true
-    });
+    return interaction.reply({ content: `✅ Successfully unlinked **${removed.iracingName}**.`, ephemeral: true });
   }
 
   if (interaction.commandName === "myirating") {
@@ -585,10 +606,10 @@ client.on("interactionCreate", async interaction => {
       .setTitle("📊 Your iRating")
       .setColor(0x00ff88)
       .addFields(
-        { name: "iRacing Name",   value: driver.iracingName || "Unknown", inline: true },
-        { name: "Current iRating", value: current.toString(),             inline: true },
-        { name: "Change",         value: changeText,                      inline: true },
-        { name: "Current Rank",   value: driver.lastRank ? `#${driver.lastRank}` : "Not ranked yet", inline: true }
+        { name: "iRacing Name",    value: driver.iracingName || "Unknown", inline: true },
+        { name: "Current iRating", value: current.toString(),              inline: true },
+        { name: "Change",          value: changeText,                      inline: true },
+        { name: "Current Rank",    value: driver.lastRank ? `#${driver.lastRank}` : "Not ranked yet", inline: true }
       )
       .setTimestamp();
 
@@ -607,8 +628,8 @@ async function showStats(interaction) {
     const driver  = drivers.find(d => d.discordId === interaction.user.id);
     if (!driver) return interaction.editReply({ content: "❌ You are not linked yet. Use `/link` first!" });
 
-    const stats       = await fetchDriverStats(driver);
-    const imageBuffer = renderStatsCard(stats);
+    const stats      = await fetchDriverStats(driver);
+    const imageBuffer = await renderStatsCard(stats);
     const attachment  = new AttachmentBuilder(imageBuffer, { name: "stats.png" });
 
     await interaction.editReply({ files: [attachment] });
@@ -635,7 +656,7 @@ async function showLeaderboard(interactionOrChannel) {
       try {
         const ir = await getCurrentIRating(driver);
         if (ir !== null) {
-          const old      = driver.lastIRating ?? ir;
+          const old          = driver.lastIRating ?? ir;
           driver.lastIRating = ir;
           driver.lastChange  = ir - old;
         }
@@ -706,12 +727,10 @@ const commands = [
   },
   {
     name: "unlinkname",
-    description: "Admin: Unlink a driver by iRacing name (use when they've left the server)",
+    description: "Admin: Unlink a driver by iRacing name (works after they leave the server)",
     options: [{
-      name:        "name",
-      description: "Full or partial iRacing name (e.g. 'Jesse D.' or just 'Jesse')",
-      type:        3, // STRING
-      required:    true
+      name: "name", description: "Full or partial iRacing name (e.g. 'Jesse' or 'Jesse D.')",
+      type: 3, required: true
     }]
   },
   { name: "myirating",   description: "Show your personal iRating" },
@@ -729,8 +748,6 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
   }
 })();
 
-// ====================== STARTUP ======================
-registerFont();
 client.login(DISCORD_TOKEN);
 
 // ====================== CRON ======================
