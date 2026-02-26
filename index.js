@@ -123,6 +123,7 @@ async function getCurrentIRating(user) {
 }
 
 async function fetchIRacingData(token, url) {
+  if (!url) return null;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
     console.log(`fetchIRacingData failed: ${res.status} ${url}`);
@@ -144,14 +145,19 @@ async function fetchIRacingData(token, url) {
 async function fetchDriverStats(user) {
   const token = await getValidAccessToken(user);
 
+  // Use customer ID for recent races endpoint if available
+  const recentRacesUrl = user.customerId
+    ? `https://members-ng.iracing.com/data/results/member_recent_races?cust_id=${user.customerId}`
+    : null;
+
   const [careerData, recentData, irChartData, srChartData] = await Promise.all([
     fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career"),
-    fetchIRacingData(token, "https://members-ng.iracing.com/data/results/member_recent_races"),
+    fetchIRacingData(token, recentRacesUrl),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
   ]);
 
-  // Career stats — field is "laps" not "laps_complete"
+  // Career stats
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
 
   // iRating
@@ -164,7 +170,7 @@ async function fetchDriverStats(user) {
 
   // Safety Rating — iRacing stores SR as cumulative integer, each class is 1000 wide:
   // R=0-999, D=1000-1999, C=2000-2999, B=3000-3999, A=4000+
-  // Within-class display value = (raw % 1000) / 100  →  e.g. 5216 → 2.16
+  // Within-class display value = (raw % 1000) / 100  e.g. 5216 → 2.16
   let srChange = 0, currentSR = 0, rawSR = 0;
   if (srChartData?.data?.length >= 2) {
     const pts  = srChartData.data;
@@ -179,7 +185,7 @@ async function fetchDriverStats(user) {
   // Recent races
   const allRaces    = recentData?.races || [];
   const seasonRaces = allRaces.filter(r => r.category_id === 5);
-  console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}`);
+  console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}, customerId: ${user.customerId}`);
 
   const seasonStarts    = seasonRaces.length;
   const seasonWins      = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
@@ -219,7 +225,7 @@ async function fetchDriverStats(user) {
       wins:      sportsCar.wins      ?? 0,
       top5:      sportsCar.top5      ?? 0,
       poles:     sportsCar.poles     ?? 0,
-      laps:      sportsCar.laps      ?? 0,   // field is "laps" not "laps_complete"
+      laps:      sportsCar.laps      ?? 0,
       lapsLed:   sportsCar.laps_led  ?? 0,
       avgStart:  sportsCar.avg_start_position?.toFixed(2)  ?? "N/A",
       avgFinish: sportsCar.avg_finish_position?.toFixed(2) ?? "N/A",
@@ -403,8 +409,7 @@ app.get("/oauth/login", (req, res) => {
     if (Date.now() - pkceStore[key].createdAt > TEN_MINUTES) delete pkceStore[key];
   }
 
-  // Scope includes iracing.results to access recent race data
-  const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile iracing.results&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+  const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
   res.redirect(authUrl);
 });
 
@@ -437,19 +442,22 @@ app.get("/oauth/callback", async (req, res) => {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
     let iracingName = "Unknown";
+    let customerId  = null;
     if (profileRes.ok) {
       const profileJson = await profileRes.json();
       if (profileJson.iracing_name) {
         const parts = profileJson.iracing_name.trim().split(/\s+/);
         iracingName = parts.length >= 2 ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.` : parts[0];
       }
+      customerId = profileJson.customer_id ?? null;
+      console.log(`Linked: ${iracingName}, customerId: ${customerId}`);
     }
 
     let drivers = loadLinkedDrivers();
     const existing = drivers.find(d => d.discordId === discordId);
     drivers = drivers.filter(d => d.discordId !== discordId);
     drivers.push({
-      discordId, iracingName,
+      discordId, iracingName, customerId,
       accessToken:  tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt:    Date.now() + tokenData.expires_in * 1000,
