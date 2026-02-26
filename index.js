@@ -147,6 +147,7 @@ async function fetchDriverStats(user) {
 
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
 
+  // iRating
   let irChange = 0, currentIR = user.lastIRating ?? 0;
   if (irChartData?.data?.length >= 2) {
     const pts = irChartData.data;
@@ -154,25 +155,33 @@ async function fetchDriverStats(user) {
     irChange  = pts[pts.length - 1].value - pts[pts.length - 2].value;
   }
 
-  let srChange = 0, currentSR = 0;
+  // Safety Rating — iRacing stores SR as cumulative integer across classes:
+  // R=0-499, D=500-999, C=1000-1499, B=1500-1999, A=2000-2499
+  // Within-class display value = (raw % 500) / 100
+  let srChange = 0, currentSR = 0, rawSR = 0;
   if (srChartData?.data?.length >= 2) {
-    const pts = srChartData.data;
-    currentSR = pts[pts.length - 1].value / 100;
-    srChange  = (pts[pts.length - 1].value - pts[pts.length - 2].value) / 100;
+    const pts  = srChartData.data;
+    rawSR      = pts[pts.length - 1].value;
+    const prev = pts[pts.length - 2].value;
+    currentSR  = (rawSR % 500) / 100;
+    srChange   = (rawSR - prev) / 100;
+    console.log(`Raw SR: ${rawSR}, display SR: ${currentSR.toFixed(2)}, change: ${srChange.toFixed(2)}`);
   }
 
-  // Log category IDs to help debug filtering
-  const allRaces = recentData?.races || [];
-  const categoryIds = [...new Set(allRaces.map(r => r.category_id))];
-  console.log(`Recent races: ${allRaces.length} total, category IDs: ${categoryIds.join(", ")}`);
+  const srClass = rawSR >= 2000 ? "A" : rawSR >= 1500 ? "B" : rawSR >= 1000 ? "C" : rawSR >= 500 ? "D" : "R";
 
-  const seasonRaces    = allRaces.filter(r => r.category_id === 5);
-  const seasonStarts   = seasonRaces.length;
-  const seasonWins     = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
-  const seasonPodiums  = seasonRaces.filter(r => r.finish_position_in_class <= 3).length;
-  const seasonPoles    = seasonRaces.filter(r => r.starting_position_in_class === 1).length;
-  const seasonLaps     = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
-  const seasonLapsLed  = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
+  // Recent races — log structure to debug
+  console.log(`recentData keys: ${Object.keys(recentData || {}).join(", ")}`);
+  const allRaces = recentData?.races || recentData || [];
+  console.log(`Recent races: ${allRaces.length} total, category IDs: ${[...new Set(allRaces.map(r => r.category_id))].join(", ")}`);
+
+  const seasonRaces     = allRaces.filter(r => r.category_id === 5);
+  const seasonStarts    = seasonRaces.length;
+  const seasonWins      = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
+  const seasonTop5      = seasonRaces.filter(r => r.finish_position_in_class <= 5).length;
+  const seasonPoles     = seasonRaces.filter(r => r.starting_position_in_class === 1).length;
+  const seasonLaps      = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
+  const seasonLapsLed   = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
   const seasonAvgStart  = seasonStarts > 0
     ? (seasonRaces.reduce((a, r) => a + (r.starting_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
   const seasonAvgFinish = seasonStarts > 0
@@ -180,6 +189,7 @@ async function fetchDriverStats(user) {
   const seasonAvgPoints = seasonStarts > 0
     ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts) : "N/A";
 
+  // iRating percentile (approximate)
   let irPercentile = null;
   if (currentIR > 0) {
     if      (currentIR >= 6000) irPercentile = 99;
@@ -195,33 +205,31 @@ async function fetchDriverStats(user) {
     else                        irPercentile = 15;
   }
 
-  const srClass = currentSR >= 4.0 ? "A" : currentSR >= 3.0 ? "B" : currentSR >= 2.0 ? "C" : currentSR >= 1.0 ? "D" : "R";
-
   return {
     name: user.iracingName,
     currentIR, irChange, irPercentile,
     currentSR: currentSR.toFixed(2), srClass, srChange: srChange.toFixed(2),
     career: {
-      starts:    sportsCar.starts    ?? 0,
-      wins:      sportsCar.wins      ?? 0,
-      top5:      sportsCar.top5      ?? 0,
-      poles:     sportsCar.poles     ?? 0,
+      starts:    sportsCar.starts        ?? 0,
+      wins:      sportsCar.wins          ?? 0,
+      top5:      sportsCar.top5          ?? 0,
+      poles:     sportsCar.poles         ?? 0,
       laps:      sportsCar.laps_complete ?? 0,
-      lapsLed:   sportsCar.laps_led  ?? 0,
+      lapsLed:   sportsCar.laps_led      ?? 0,
       avgStart:  sportsCar.avg_start_position?.toFixed(2)  ?? "N/A",
       avgFinish: sportsCar.avg_finish_position?.toFixed(2) ?? "N/A",
       avgPoints: sportsCar.avg_champ_points ? Math.round(sportsCar.avg_champ_points) : "N/A",
       winPct:    sportsCar.starts > 0 ? Math.round((sportsCar.wins / sportsCar.starts) * 100) : 0,
-      podiumPct: sportsCar.starts > 0 ? Math.round(((sportsCar.top5 ?? 0) / sportsCar.starts) * 100) : 0,
+      top5Pct:   sportsCar.starts > 0 ? Math.round(((sportsCar.top5 ?? 0) / sportsCar.starts) * 100) : 0,
       polePct:   sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
     },
     season: {
-      starts: seasonStarts, wins: seasonWins, podiums: seasonPodiums, poles: seasonPoles,
+      starts: seasonStarts, wins: seasonWins, top5: seasonTop5, poles: seasonPoles,
       laps: seasonLaps, lapsLed: seasonLapsLed,
       avgStart: seasonAvgStart, avgFinish: seasonAvgFinish, avgPoints: seasonAvgPoints,
-      winPct:    seasonStarts > 0 ? Math.round((seasonWins    / seasonStarts) * 100) : 0,
-      podiumPct: seasonStarts > 0 ? Math.round((seasonPodiums / seasonStarts) * 100) : 0,
-      polePct:   seasonStarts > 0 ? Math.round((seasonPoles   / seasonStarts) * 100) : 0,
+      winPct:  seasonStarts > 0 ? Math.round((seasonWins / seasonStarts) * 100) : 0,
+      top5Pct: seasonStarts > 0 ? Math.round((seasonTop5 / seasonStarts) * 100) : 0,
+      polePct: seasonStarts > 0 ? Math.round((seasonPoles / seasonStarts) * 100) : 0,
     }
   };
 }
@@ -246,15 +254,15 @@ function buildStatsHTML(stats) {
   const topPct       = stats.irPercentile !== null ? `top ${100 - stats.irPercentile + 1}% of Sports Car drivers` : "";
 
   const rows = [
-    { label: "Starts",     season: stats.season.starts,                                    career: stats.career.starts },
-    { label: "Wins",       season: `${stats.season.wins} (${stats.season.winPct}%)`,       career: `${stats.career.wins} (${stats.career.winPct}%)` },
-    { label: "Podiums",    season: `${stats.season.podiums} (${stats.season.podiumPct}%)`, career: `${stats.career.top5} (${stats.career.podiumPct}%)` },
-    { label: "Poles",      season: `${stats.season.poles} (${stats.season.polePct}%)`,     career: `${stats.career.poles} (${stats.career.polePct}%)` },
-    { label: "Total Laps", season: stats.season.laps,                                      career: stats.career.laps },
-    { label: "Laps Led",   season: stats.season.lapsLed,                                   career: stats.career.lapsLed },
-    { label: "Avg Start",  season: stats.season.avgStart,                                  career: stats.career.avgStart },
-    { label: "Avg Finish", season: stats.season.avgFinish,                                 career: stats.career.avgFinish },
-    { label: "Avg Points", season: stats.season.avgPoints,                                 career: stats.career.avgPoints },
+    { label: "Starts",     season: stats.season.starts,                                career: stats.career.starts },
+    { label: "Wins",       season: `${stats.season.wins} (${stats.season.winPct}%)`,   career: `${stats.career.wins} (${stats.career.winPct}%)` },
+    { label: "Top 5",      season: `${stats.season.top5} (${stats.season.top5Pct}%)`,  career: `${stats.career.top5} (${stats.career.top5Pct}%)` },
+    { label: "Poles",      season: `${stats.season.poles} (${stats.season.polePct}%)`, career: `${stats.career.poles} (${stats.career.polePct}%)` },
+    { label: "Total Laps", season: stats.season.laps,                                  career: stats.career.laps },
+    { label: "Laps Led",   season: stats.season.lapsLed,                               career: stats.career.lapsLed },
+    { label: "Avg Start",  season: stats.season.avgStart,                              career: stats.career.avgStart },
+    { label: "Avg Finish", season: stats.season.avgFinish,                             career: stats.career.avgFinish },
+    { label: "Avg Points", season: stats.season.avgPoints,                             career: stats.career.avgPoints },
   ];
 
   const rowsHTML = rows.map((row, i) => `
@@ -439,10 +447,9 @@ app.get("/oauth/callback", async (req, res) => {
       accessToken:  tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt:    Date.now() + tokenData.expires_in * 1000,
-      // Preserve existing leaderboard data if re-linking
-      lastIRating: existing?.lastIRating,
-      lastChange:  existing?.lastChange,
-      lastRank:    existing?.lastRank,
+      lastIRating:  existing?.lastIRating,
+      lastChange:   existing?.lastChange,
+      lastRank:     existing?.lastRank,
     });
     saveLinkedDrivers(drivers);
     res.send(`✅ Linked as <b>${iracingName}</b>!<br><br>You can now close this window.`);
@@ -487,7 +494,7 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: "You were not linked.", flags: 64 });
   }
 
-  // /unlink (by Discord user picker — must still be in server)
+  // /unlink (by Discord user picker)
   if (interaction.commandName === "unlink") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Administrators only.", flags: 64 });
@@ -573,7 +580,7 @@ async function showStats(interaction) {
     const driver  = drivers.find(d => d.discordId === interaction.user.id);
     if (!driver) return interaction.editReply({ content: "❌ You are not linked yet. Use `/link` first!" });
 
-    const stats      = await fetchDriverStats(driver);
+    const stats       = await fetchDriverStats(driver);
     const imageBuffer = await renderStatsCard(stats);
     await interaction.editReply({ files: [new AttachmentBuilder(imageBuffer, { name: "stats.png" })] });
   } catch (err) {
