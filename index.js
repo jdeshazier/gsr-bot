@@ -449,7 +449,8 @@ app.get("/oauth/callback", async (req, res) => {
         const parts = profileJson.iracing_name.trim().split(/\s+/);
         iracingName = parts.length >= 2 ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.` : parts[0];
       }
-      customerId = profileJson.customer_id ?? null;
+      customerId = profileJson.cust_id ?? profileJson.customer_id ?? null;
+console.log(`Profile fields: ${Object.keys(profileJson).join(", ")}`);
       console.log(`Linked: ${iracingName}, customerId: ${customerId}`);
     }
 
