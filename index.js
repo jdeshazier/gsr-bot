@@ -170,25 +170,24 @@ async function fetchDriverStats(user) {
 
   const srClass = rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
 
-  // Recent races
-  const allRaces    = recentData?.races || [];
-  const seasonRaces = allRaces.filter(r => r.category_id === 5);
+  // Recent races — filter Sports Car by series name (no category_id field)
+  const seasonRaces = allRaces.filter(r =>
+    r.series_name?.toLowerCase().includes("sport")
+  );
   console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}`);
-  console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}`);
-  console.log(`First race keys: ${Object.keys(allRaces[0] || {}).join(", ")}`);
 
   const seasonStarts    = seasonRaces.length;
-  const seasonWins      = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
-  const seasonTop5      = seasonRaces.filter(r => r.finish_position_in_class <= 5).length;
-  const seasonPoles     = seasonRaces.filter(r => r.starting_position_in_class === 1).length;
-  const seasonLaps      = seasonRaces.reduce((a, r) => a + (r.laps_complete || 0), 0);
+  const seasonWins      = seasonRaces.filter(r => r.finish_position === 1).length;
+  const seasonTop5      = seasonRaces.filter(r => r.finish_position <= 5).length;
+  const seasonPoles     = seasonRaces.filter(r => r.start_position === 1).length;
+  const seasonLaps      = seasonRaces.reduce((a, r) => a + (r.laps || 0), 0);
   const seasonLapsLed   = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
   const seasonAvgStart  = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.starting_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
+    ? (seasonRaces.reduce((a, r) => a + (r.start_position || 0), 0) / seasonStarts).toFixed(2) : "N/A";
   const seasonAvgFinish = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.finish_position_in_class + 1 || 0), 0) / seasonStarts).toFixed(2) : "N/A";
+    ? (seasonRaces.reduce((a, r) => a + (r.finish_position || 0), 0) / seasonStarts).toFixed(2) : "N/A";
   const seasonAvgPoints = seasonStarts > 0
-    ? Math.round(seasonRaces.reduce((a, r) => a + (r.champ_points || 0), 0) / seasonStarts) : "N/A";
+    ? Math.round(seasonRaces.reduce((a, r) => a + (r.points || 0), 0) / seasonStarts) : "N/A";
 
   // iRating percentile (approximate)
   let irPercentile = null;
