@@ -126,8 +126,11 @@ async function fetchIRacingData(token, url) {
   if (!url) return null;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
-    console.log(`fetchIRacingData failed: ${res.status} ${url}`);
+    const body = await res.text();
+    console.log(`fetchIRacingData failed: ${res.status} ${url} | body: ${body.slice(0, 200)}`);
     return null;
+  }
+  // ... rest unchanged
   }
   const json = await res.json();
   if (json.link) {
@@ -146,7 +149,7 @@ async function fetchDriverStats(user) {
   const token = await getValidAccessToken(user);
 
   // Use customer ID for recent races endpoint if available
-  const recentRacesUrl = user.customerId
+  const recentRacesUrl = `https://members-ng.iracing.com/data/results/member_recent_races`;
     ? `https://members-ng.iracing.com/data/results/member_recent_races?cust_id=${user.customerId}`
     : null;
 
