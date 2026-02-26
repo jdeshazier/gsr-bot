@@ -147,7 +147,11 @@ async function fetchDriverStats(user) {
     srChange  = (pts[pts.length - 1].value - pts[pts.length - 2].value) / 100;
   }
 
-  const seasonRaces    = (recentData?.races || []).filter(r => r.category_id === 5);
+  const allRaces = recentData?.races || [];
+console.log(`Recent races total: ${allRaces.length}`);
+console.log(`Category IDs found: ${[...new Set(allRaces.map(r => r.category_id))].join(', ')}`);
+const seasonRaces = allRaces.filter(r => r.category_id === 5);
+console.log(`Sports Car races filtered: ${seasonRaces.length}`);
   const seasonStarts   = seasonRaces.length;
   const seasonWins     = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
   const seasonPodiums  = seasonRaces.filter(r => r.finish_position_in_class <= 3).length;
