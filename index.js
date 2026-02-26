@@ -171,6 +171,7 @@ async function fetchDriverStats(user) {
   const srClass = rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
 
   // Recent races — filter Sports Car by series name (no category_id field)
+  const allRaces    = recentData?.races || recentData || [];
   const seasonRaces = allRaces.filter(r =>
     r.series_name?.toLowerCase().includes("sport")
   );
