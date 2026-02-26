@@ -132,7 +132,7 @@ async function fetchIRacingData(token, url) {
   if (json.link) {
     const dataRes = await fetch(json.link);
     if (!dataRes.ok) {
-      console.log(`fetchIRacingData link failed: ${dataRes.status} ${json.link}`);
+      console.log(`fetchIRacingData link failed: ${dataRes.status}`);
       return null;
     }
     return dataRes.json();
@@ -151,9 +151,8 @@ async function fetchDriverStats(user) {
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
   ]);
 
+  // Career stats — field is "laps" not "laps_complete"
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
-  console.log(`Career fields: ${Object.keys(sportsCar).join(", ")}`);
-  console.log(`Career laps: ${sportsCar.laps_complete}, laps_led: ${sportsCar.laps_led}`);
 
   // iRating
   let irChange = 0, currentIR = user.lastIRating ?? 0;
@@ -163,27 +162,25 @@ async function fetchDriverStats(user) {
     irChange  = pts[pts.length - 1].value - pts[pts.length - 2].value;
   }
 
-  // Safety Rating — iRacing stores SR as cumulative integer across classes:
-  // R=0-499, D=500-999, C=1000-1499, B=1500-1999, A=2000-2499
-  // Within-class display value = (raw % 500) / 100
+  // Safety Rating — iRacing stores SR as cumulative integer, each class is 1000 wide:
+  // R=0-999, D=1000-1999, C=2000-2999, B=3000-3999, A=4000+
+  // Within-class display value = (raw % 1000) / 100  →  e.g. 5216 → 2.16
   let srChange = 0, currentSR = 0, rawSR = 0;
   if (srChartData?.data?.length >= 2) {
     const pts  = srChartData.data;
     rawSR      = pts[pts.length - 1].value;
     const prev = pts[pts.length - 2].value;
-    currentSR  = (rawSR % 500) / 100;
+    currentSR  = (rawSR % 1000) / 100;
     srChange   = (rawSR - prev) / 100;
-    console.log(`Raw SR: ${rawSR}, display SR: ${currentSR.toFixed(2)}, change: ${srChange.toFixed(2)}`);
   }
 
-  const srClass = rawSR >= 2000 ? "A" : rawSR >= 1500 ? "B" : rawSR >= 1000 ? "C" : rawSR >= 500 ? "D" : "R";
+  const srClass = rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
 
-  // Recent races — log structure to debug
-  console.log(`recentData keys: ${Object.keys(recentData || {}).join(", ")}`);
-  const allRaces = recentData?.races || recentData || [];
-  console.log(`Recent races: ${allRaces.length} total, category IDs: ${[...new Set(allRaces.map(r => r.category_id))].join(", ")}`);
+  // Recent races
+  const allRaces    = recentData?.races || [];
+  const seasonRaces = allRaces.filter(r => r.category_id === 5);
+  console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}`);
 
-  const seasonRaces     = allRaces.filter(r => r.category_id === 5);
   const seasonStarts    = seasonRaces.length;
   const seasonWins      = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
   const seasonTop5      = seasonRaces.filter(r => r.finish_position_in_class <= 5).length;
@@ -218,15 +215,15 @@ async function fetchDriverStats(user) {
     currentIR, irChange, irPercentile,
     currentSR: currentSR.toFixed(2), srClass, srChange: srChange.toFixed(2),
     career: {
-      starts:    sportsCar.starts        ?? 0,
-      wins:      sportsCar.wins          ?? 0,
-      top5:      sportsCar.top5          ?? 0,
-      poles:     sportsCar.poles         ?? 0,
-      laps:      sportsCar.laps_complete ?? 0,
-      lapsLed:   sportsCar.laps_led      ?? 0,
+      starts:    sportsCar.starts    ?? 0,
+      wins:      sportsCar.wins      ?? 0,
+      top5:      sportsCar.top5      ?? 0,
+      poles:     sportsCar.poles     ?? 0,
+      laps:      sportsCar.laps      ?? 0,   // field is "laps" not "laps_complete"
+      lapsLed:   sportsCar.laps_led  ?? 0,
       avgStart:  sportsCar.avg_start_position?.toFixed(2)  ?? "N/A",
       avgFinish: sportsCar.avg_finish_position?.toFixed(2) ?? "N/A",
-      avgPoints: sportsCar.avg_champ_points ? Math.round(sportsCar.avg_champ_points) : "N/A",
+      avgPoints: sportsCar.avg_points ? Math.round(sportsCar.avg_points) : "N/A",
       winPct:    sportsCar.starts > 0 ? Math.round((sportsCar.wins / sportsCar.starts) * 100) : 0,
       top5Pct:   sportsCar.starts > 0 ? Math.round(((sportsCar.top5 ?? 0) / sportsCar.starts) * 100) : 0,
       polePct:   sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
@@ -406,7 +403,8 @@ app.get("/oauth/login", (req, res) => {
     if (Date.now() - pkceStore[key].createdAt > TEN_MINUTES) delete pkceStore[key];
   }
 
-  const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+  // Scope includes iracing.results to access recent race data
+  const authUrl = `${AUTHORIZE_URL}?response_type=code&client_id=${encodeURIComponent(IRACING_CLIENT_ID)}&redirect_uri=${encodeURIComponent(IRACING_REDIRECT_URI)}&scope=iracing.auth iracing.profile iracing.results&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
   res.redirect(authUrl);
 });
 
@@ -478,19 +476,16 @@ client.once("clientReady", () => console.log("✅ Bot logged in!"));
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  // /ping
   if (interaction.commandName === "ping") {
     return interaction.reply("🏁 Pong!");
   }
 
-  // /link
   if (interaction.commandName === "link") {
     const state    = encodeURIComponent(interaction.user.id);
     const loginUrl = `https://www.gsracing.app/oauth/login?state=${state}`;
     return interaction.reply({ content: `🔗 Link your iRacing account: ${loginUrl}`, flags: 64 });
   }
 
-  // /unlinkme
   if (interaction.commandName === "unlinkme") {
     let drivers = loadLinkedDrivers();
     const initial = drivers.length;
@@ -502,7 +497,6 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: "You were not linked.", flags: 64 });
   }
 
-  // /unlink (by Discord user picker)
   if (interaction.commandName === "unlink") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Administrators only.", flags: 64 });
@@ -520,7 +514,6 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: "That user was not linked.", flags: 64 });
   }
 
-  // /unlinkname (by iRacing name — works after driver leaves server)
   if (interaction.commandName === "unlinkname") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Administrators only.", flags: 64 });
@@ -551,7 +544,6 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply({ content: `✅ Unlinked **${removed.iracingName}**.`, flags: 64 });
   }
 
-  // /myirating
   if (interaction.commandName === "myirating") {
     const drivers = loadLinkedDrivers();
     const driver  = drivers.find(d => d.discordId === interaction.user.id);
