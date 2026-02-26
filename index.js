@@ -143,7 +143,7 @@ async function fetchDriverStats(user) {
 
   const [careerData, recentData, irChartData, srChartData] = await Promise.all([
     fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career"),
-    fetchIRacingData(token, "https://members-ng.iracing.com/data/results/member_recent_races"),
+    fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_recent_races"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
   ]);
