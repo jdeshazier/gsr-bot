@@ -124,11 +124,17 @@ async function getCurrentIRating(user) {
 
 async function fetchIRacingData(token, url) {
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    console.log(`fetchIRacingData failed: ${res.status} ${url}`);
+    return null;
+  }
   const json = await res.json();
   if (json.link) {
     const dataRes = await fetch(json.link);
-    if (!dataRes.ok) return null;
+    if (!dataRes.ok) {
+      console.log(`fetchIRacingData link failed: ${dataRes.status} ${json.link}`);
+      return null;
+    }
     return dataRes.json();
   }
   return json;
@@ -142,10 +148,12 @@ async function fetchDriverStats(user) {
     fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/results/member_recent_races"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"),
-    fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=2&category_id=5"),
+    fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
   ]);
 
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
+  console.log(`Career fields: ${Object.keys(sportsCar).join(", ")}`);
+  console.log(`Career laps: ${sportsCar.laps_complete}, laps_led: ${sportsCar.laps_led}`);
 
   // iRating
   let irChange = 0, currentIR = user.lastIRating ?? 0;
