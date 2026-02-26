@@ -175,7 +175,7 @@ async function fetchDriverStats(user) {
   const seasonRaces = allRaces.filter(r => r.category_id === 5);
   console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}`);
   console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}`);
-  console.log(`Category IDs found: ${[...new Set(allRaces.map(r => r.category_id))].join(", ")}`);
+  console.log(`First race keys: ${Object.keys(allRaces[0] || {}).join(", ")}`);
 
   const seasonStarts    = seasonRaces.length;
   const seasonWins      = seasonRaces.filter(r => r.finish_position_in_class === 1).length;
