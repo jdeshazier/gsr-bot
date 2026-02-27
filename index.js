@@ -173,7 +173,6 @@ async function fetchDriverStats(user) {
   // Current season stats from yearly endpoint — find 2026 Sports Car
   const yearlyStats  = Array.isArray(recentData) ? recentData : (recentData?.stats || []);
   const seasonData   = yearlyStats.find(s => s.category_id === 5 && s.year === 2026) || {};
-  console.log(`Yearly keys: ${Object.keys(seasonData).join(", ")}`);
 
   const seasonStarts    = seasonData.starts    ?? 0;
   const seasonWins      = seasonData.wins      ?? 0;
@@ -436,8 +435,6 @@ app.get("/oauth/callback", async (req, res) => {
         iracingName = parts.length >= 2 ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.` : parts[0];
       }
       customerId = profileJson.iracing_cust_id ?? null;
-      console.log(`Profile fields: ${Object.keys(profileJson).join(", ")}`);
-      console.log(`Linked: ${iracingName}, customerId: ${customerId}`);
     }
 
     let drivers = loadLinkedDrivers();
@@ -585,7 +582,10 @@ async function showStats(interaction) {
 }
 
 // ====================== LEADERBOARD ======================
-async function showLeaderboard(interactionOrChannel) {
+// saveBaseline=true only when called from the weekly cron.
+// Manual /leaderboard calls show live iRatings but do NOT update the stored
+// baseline, so the weekly change reflects the full week of movement.
+async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
   const isInteraction = !!(interactionOrChannel.deferReply);
 
   try {
@@ -612,7 +612,12 @@ async function showLeaderboard(interactionOrChannel) {
 
     drivers.sort((a, b) => (b.lastIRating ?? 0) - (a.lastIRating ?? 0));
     drivers.forEach((d, i) => d.lastRank = i + 1);
-    saveLinkedDrivers(drivers);
+
+    // Only persist the new baseline when called from the weekly cron
+    if (saveBaseline) {
+      saveLinkedDrivers(drivers);
+      console.log("Weekly baseline saved.");
+    }
 
     const embedColor   = drivers[0]?.lastChange > 0 ? 0x00cc66 : drivers[0]?.lastChange < 0 ? 0xff4444 : 0x00ff88;
     const totalDrivers = drivers.length;
@@ -690,8 +695,11 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 client.login(DISCORD_TOKEN);
 
 // ====================== CRON ======================
+// Runs every Sunday at noon CST (18:00 UTC). saveBaseline=true so this is
+// the only call that updates lastIRating/lastChange in storage — manual
+// /leaderboard checks are read-only and won't reset the weekly baseline.
 const { CronJob } = require("cron");
-new CronJob("0 12 * * *", async () => {
+new CronJob("0 12 * * 0", async () => {
   const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
-  if (channel) await showLeaderboard(channel);
+  if (channel) await showLeaderboard(channel, true);
 }, null, true, "America/Chicago");
