@@ -143,7 +143,7 @@ async function fetchDriverStats(user) {
 
   const [careerData, recentData, irChartData, srChartData] = await Promise.all([
     fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career"),
-    fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_recent_races"),
+    fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_yearly"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
   ]);
@@ -170,25 +170,23 @@ async function fetchDriverStats(user) {
 
   const srClass = rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
 
-  // Recent races — filter Sports Car by series name (no category_id field)
-  const allRaces    = recentData?.races || recentData || [];
-  const seasonRaces = allRaces.filter(r =>
-    r.series_name?.toLowerCase().includes("sport")
-  );
-  console.log(`Recent races: ${allRaces.length} total, Sports Car: ${seasonRaces.length}`);
+  // Current season stats from yearly endpoint — find 2026 Sports Car
+  const yearlyStats  = Array.isArray(recentData) ? recentData : (recentData?.stats || []);
+  const seasonData   = yearlyStats.find(s => s.category_id === 5 && s.year === 2026) || {};
+  console.log(`Yearly keys: ${Object.keys(seasonData).join(", ")}`);
 
-  const seasonStarts    = seasonRaces.length;
-  const seasonWins      = seasonRaces.filter(r => r.finish_position === 1).length;
-  const seasonTop5      = seasonRaces.filter(r => r.finish_position <= 5).length;
-  const seasonPoles     = seasonRaces.filter(r => r.start_position === 1).length;
-  const seasonLaps      = seasonRaces.reduce((a, r) => a + (r.laps || 0), 0);
-  const seasonLapsLed   = seasonRaces.reduce((a, r) => a + (r.laps_led || 0), 0);
-  const seasonAvgStart  = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.start_position || 0), 0) / seasonStarts).toFixed(2) : "N/A";
-  const seasonAvgFinish = seasonStarts > 0
-    ? (seasonRaces.reduce((a, r) => a + (r.finish_position || 0), 0) / seasonStarts).toFixed(2) : "N/A";
-  const seasonAvgPoints = seasonStarts > 0
-    ? Math.round(seasonRaces.reduce((a, r) => a + (r.points || 0), 0) / seasonStarts) : "N/A";
+  const seasonStarts    = seasonData.starts    ?? 0;
+  const seasonWins      = seasonData.wins      ?? 0;
+  const seasonTop5      = seasonData.top5      ?? 0;
+  const seasonPoles     = seasonData.poles     ?? 0;
+  const seasonLaps      = seasonData.laps      ?? 0;
+  const seasonLapsLed   = seasonData.laps_led  ?? 0;
+  const seasonAvgStart  = seasonData.avg_start_position?.toFixed(2)  ?? "N/A";
+  const seasonAvgFinish = seasonData.avg_finish_position?.toFixed(2) ?? "N/A";
+  const seasonAvgPoints = seasonData.avg_points ? Math.round(seasonData.avg_points) : "N/A";
+  const seasonWinPct    = seasonStarts > 0 ? Math.round((seasonWins / seasonStarts) * 100) : 0;
+  const seasonTop5Pct   = seasonStarts > 0 ? Math.round((seasonTop5 / seasonStarts) * 100) : 0;
+  const seasonPolePct   = seasonStarts > 0 ? Math.round((seasonPoles / seasonStarts) * 100) : 0;
 
   // iRating percentile (approximate)
   let irPercentile = null;
@@ -228,9 +226,7 @@ async function fetchDriverStats(user) {
       starts: seasonStarts, wins: seasonWins, top5: seasonTop5, poles: seasonPoles,
       laps: seasonLaps, lapsLed: seasonLapsLed,
       avgStart: seasonAvgStart, avgFinish: seasonAvgFinish, avgPoints: seasonAvgPoints,
-      winPct:  seasonStarts > 0 ? Math.round((seasonWins / seasonStarts) * 100) : 0,
-      top5Pct: seasonStarts > 0 ? Math.round((seasonTop5 / seasonStarts) * 100) : 0,
-      polePct: seasonStarts > 0 ? Math.round((seasonPoles / seasonStarts) * 100) : 0,
+      winPct: seasonWinPct, top5Pct: seasonTop5Pct, polePct: seasonPolePct,
     }
   };
 }
