@@ -16,6 +16,7 @@
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
     "node-fetch": "^2.7.0",
-    "puppeteer": "^24.37.5"
+    "puppeteer": "^24.37.5",
+    "rss-parser": "^3.13.0"
   }
 }

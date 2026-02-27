@@ -14,6 +14,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const puppeteer = require("puppeteer");
+const Parser = require("rss-parser");
 
 // ====================== ENV ======================
 const {
@@ -26,6 +27,8 @@ const {
   ANNOUNCE_CHANNEL_ID
 } = process.env;
 
+const NEWS_CHANNEL_ID = "1410663955759759410";
+
 if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
     !IRACING_CLIENT_SECRET || !IRACING_REDIRECT_URI || !ANNOUNCE_CHANNEL_ID) {
   console.error("❌ Missing required environment variables.");
@@ -33,8 +36,9 @@ if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
 }
 
 // ====================== STORAGE ======================
-const DATA_DIR    = "/app/data";
-const LINKED_FILE = path.join(DATA_DIR, "linked-drivers.json");
+const DATA_DIR        = "/app/data";
+const LINKED_FILE     = path.join(DATA_DIR, "linked-drivers.json");
+const LAST_NEWS_FILE  = path.join(DATA_DIR, "last-news.json");
 
 function loadLinkedDrivers() {
   try {
@@ -54,6 +58,22 @@ function saveLinkedDrivers(drivers) {
     console.log(`Saved ${drivers.length} linked driver(s)`);
   } catch (err) {
     console.error("Error saving linked-drivers:", err.message);
+  }
+}
+
+function loadLastNewsUrl() {
+  try {
+    if (!fs.existsSync(LAST_NEWS_FILE)) return null;
+    return JSON.parse(fs.readFileSync(LAST_NEWS_FILE, "utf8")).url || null;
+  } catch { return null; }
+}
+
+function saveLastNewsUrl(url) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(LAST_NEWS_FILE, JSON.stringify({ url }), "utf8");
+  } catch (err) {
+    console.error("Error saving last news URL:", err.message);
   }
 }
 
@@ -135,6 +155,47 @@ async function fetchIRacingData(token, url) {
     return dataRes.json();
   }
   return json;
+}
+
+// ====================== NEWS CHECKER ======================
+const rssParser = new Parser();
+
+async function checkIRacingNews() {
+  try {
+    const feed = await rssParser.parseURL("https://www.iracing.com/feed/");
+    if (!feed.items || feed.items.length === 0) return;
+
+    const latest      = feed.items[0];
+    const latestUrl   = latest.link;
+    const lastSeenUrl = loadLastNewsUrl();
+
+    if (latestUrl === lastSeenUrl) return; // nothing new
+
+    saveLastNewsUrl(latestUrl);
+
+    const channel = client.channels.cache.get(NEWS_CHANNEL_ID);
+    if (!channel) {
+      console.log("News channel not found:", NEWS_CHANNEL_ID);
+      return;
+    }
+
+    const pubDate = latest.pubDate ? new Date(latest.pubDate).toLocaleDateString("en-US", {
+      weekday: "long", year: "numeric", month: "long", day: "numeric"
+    }) : "";
+
+    const embed = new EmbedBuilder()
+      .setColor(0x0099ff)
+      .setTitle(latest.title || "New iRacing Post")
+      .setURL(latestUrl)
+      .setDescription(pubDate ? `📅 ${pubDate}` : "New post from iRacing")
+      .setFooter({ text: "iRacing News • iracing.com" })
+      .setTimestamp();
+
+    await channel.send({ content: "📰 **New iRacing update!**", embeds: [embed] });
+    console.log(`News posted: ${latest.title}`);
+  } catch (err) {
+    console.error("News check error:", err.message);
+  }
 }
 
 // ====================== STATS FETCHER ======================
@@ -463,7 +524,13 @@ app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`))
 // ====================== DISCORD CLIENT ======================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once("clientReady", () => console.log("✅ Bot logged in!"));
+client.once("clientReady", () => {
+  console.log("✅ Bot logged in!");
+
+  // Start news checker once bot is ready — check every hour
+  checkIRacingNews();
+  setInterval(checkIRacingNews, 60 * 60 * 1000);
+});
 
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
