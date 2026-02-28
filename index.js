@@ -760,14 +760,14 @@ client.on("interactionCreate", async interaction => {
     if (matches.length === 0) {
       const names = drivers.map((d, i) => `${i + 1}. ${d.iracingName}`).join("\n") || "None";
       return interaction.reply({
-        content: `❌ No driver found matching **"${inputName}"**.\n\nCurrently linked:\n\\`\\`\\`\n${names}\n\\`\\`\\``,
+        content: `❌ No driver found matching **"${inputName}"**.\n\nCurrently linked:\n` + "```" + `\n${names}\n` + "```",
         flags: 64
       });
     }
     if (matches.length > 1) {
       const names = matches.map(d => d.iracingName).join("\n");
       return interaction.reply({
-        content: `⚠️ Multiple matches for **"${inputName}"**. Be more specific:\n\\`\\`\\`\n${names}\n\\`\\`\\``,
+        content: `⚠️ Multiple matches for **"${inputName}"**. Be more specific:\n` + "```" + `\n${names}\n` + "```",
         flags: 64
       });
     }
