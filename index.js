@@ -643,12 +643,9 @@ function buildLeaderboardHTML(drivers) {
     const isTop3   = pos <= 3;
     const posClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "normal";
     const barClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "lime";
-    const medalSVG = pos === 1
-      ? `<span class="medal-dot" style="background:var(--gold);box-shadow:0 0 6px var(--gold)"></span>`
-      : pos === 2
-      ? `<span class="medal-dot" style="background:var(--silver);box-shadow:0 0 6px var(--silver)"></span>`
-      : pos === 3
-      ? `<span class="medal-dot" style="background:var(--bronze);box-shadow:0 0 6px var(--bronze)"></span>`
+    const medalHTML = pos === 1 ? `<span class="medal">🏆</span>`
+      : pos === 2 ? `<span class="medal">🥈</span>`
+      : pos === 3 ? `<span class="medal">🥉</span>`
       : "";
     const ir       = d.lastIRating ?? 0;
     const pct      = Math.round((ir / maxIR) * 100);
@@ -665,7 +662,7 @@ function buildLeaderboardHTML(drivers) {
     return `
       <div class="driver-row${isTop3 ? " top3" : ""}">
         <div class="row-main">
-          <div class="pos ${posClass}">${pos}${medalSVG}</div>
+          <div class="pos ${posClass}">${pos}${medalHTML}</div>
           <div class="name">${d.iracingName || "Unknown"}</div>
           <div class="ir">${ir.toLocaleString()}</div>
           ${changeHTML}
@@ -681,7 +678,7 @@ function buildLeaderboardHTML(drivers) {
 <head>
 <meta charset="UTF-8">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Barlow+Condensed:wght@400;600;700;800;900&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Barlow+Condensed:wght@400;600;700;800;900&family=Noto+Color+Emoji&display=swap');
 
   :root {
     --lime: #a8d000;
@@ -771,7 +768,7 @@ function buildLeaderboardHTML(drivers) {
     width: 32px; text-align: center; line-height: 1;
     display: flex; flex-direction: column; align-items: center;
   }
-  .medal-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 3px; display: inline-block; }
+  .medal { font-family: 'Noto Color Emoji', sans-serif; font-size: 12px; line-height: 1; margin-top: 2px; }
   .pos.gold   { color: var(--gold); }
   .pos.silver { color: var(--silver); }
   .pos.bronze { color: var(--bronze); }
@@ -827,7 +824,7 @@ function buildLeaderboardHTML(drivers) {
     <div class="header-carbon"></div>
     <div class="header-overlay"></div>
     <div class="header-inner">
-      <div class="title">GSR LEADERBOARD</div>
+      <div class="title">GSR <span style="color:var(--lime)">LEADERBOARD</span></div>
       <div class="subtitle">Sports Car · iRating Rankings</div>
     </div>
   </div>
