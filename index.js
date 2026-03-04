@@ -643,7 +643,13 @@ function buildLeaderboardHTML(drivers) {
     const isTop3   = pos <= 3;
     const posClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "normal";
     const barClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "lime";
-    const medal    = pos === 1 ? "🏆" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
+    const medalSVG = pos === 1
+      ? `<span class="medal-dot" style="background:var(--gold);box-shadow:0 0 6px var(--gold)"></span>`
+      : pos === 2
+      ? `<span class="medal-dot" style="background:var(--silver);box-shadow:0 0 6px var(--silver)"></span>`
+      : pos === 3
+      ? `<span class="medal-dot" style="background:var(--bronze);box-shadow:0 0 6px var(--bronze)"></span>`
+      : "";
     const ir       = d.lastIRating ?? 0;
     const pct      = Math.round((ir / maxIR) * 100);
 
@@ -659,7 +665,7 @@ function buildLeaderboardHTML(drivers) {
     return `
       <div class="driver-row${isTop3 ? " top3" : ""}">
         <div class="row-main">
-          <div class="pos ${posClass}">${pos}${medal ? `<span class="medal">${medal}</span>` : ""}</div>
+          <div class="pos ${posClass}">${pos}${medalSVG}</div>
           <div class="name">${d.iracingName || "Unknown"}</div>
           <div class="ir">${ir.toLocaleString()}</div>
           ${changeHTML}
@@ -689,11 +695,11 @@ function buildLeaderboardHTML(drivers) {
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: 780px; background: #060606; }
+  body { width: 1040px; background: #060606; }
 
   .card {
     width: 520px;
-    zoom: 1.5;
+    zoom: 2;
     border-radius: 20px;
     border: 3px solid var(--lime);
     position: relative; overflow: hidden;
@@ -765,7 +771,7 @@ function buildLeaderboardHTML(drivers) {
     width: 32px; text-align: center; line-height: 1;
     display: flex; flex-direction: column; align-items: center;
   }
-  .pos .medal { font-size: 14px; line-height: 1; margin-top: 2px; }
+  .medal-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 3px; display: inline-block; }
   .pos.gold   { color: var(--gold); }
   .pos.silver { color: var(--silver); }
   .pos.bronze { color: var(--bronze); }
@@ -849,7 +855,7 @@ async function renderLeaderboardCard(drivers) {
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 780, height: 2400, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 1040, height: 3200, deviceScaleFactor: 2 });
     await page.setContent(buildLeaderboardHTML(drivers), { waitUntil: "networkidle0" });
     const card = await page.$(".card");
     return await card.screenshot({ type: "png" });
