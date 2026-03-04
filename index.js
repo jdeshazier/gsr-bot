@@ -643,6 +643,7 @@ function buildLeaderboardHTML(drivers) {
     const isTop3   = pos <= 3;
     const posClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "normal";
     const barClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "lime";
+    const medal    = pos === 1 ? "🏆" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : "";
     const ir       = d.lastIRating ?? 0;
     const pct      = Math.round((ir / maxIR) * 100);
 
@@ -658,7 +659,7 @@ function buildLeaderboardHTML(drivers) {
     return `
       <div class="driver-row${isTop3 ? " top3" : ""}">
         <div class="row-main">
-          <div class="pos ${posClass}">${pos}</div>
+          <div class="pos ${posClass}">${pos}${medal ? `<span class="medal">${medal}</span>` : ""}</div>
           <div class="name">${d.iracingName || "Unknown"}</div>
           <div class="ir">${ir.toLocaleString()}</div>
           ${changeHTML}
@@ -688,10 +689,11 @@ function buildLeaderboardHTML(drivers) {
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: 520px; background: #060606; }
+  body { width: 780px; background: #060606; }
 
   .card {
     width: 520px;
+    zoom: 1.5;
     border-radius: 20px;
     border: 3px solid var(--lime);
     position: relative; overflow: hidden;
@@ -761,7 +763,9 @@ function buildLeaderboardHTML(drivers) {
     font-family: 'Barlow Condensed', sans-serif;
     font-size: 22px; font-weight: 900;
     width: 32px; text-align: center; line-height: 1;
+    display: flex; flex-direction: column; align-items: center;
   }
+  .pos .medal { font-size: 14px; line-height: 1; margin-top: 2px; }
   .pos.gold   { color: var(--gold); }
   .pos.silver { color: var(--silver); }
   .pos.bronze { color: var(--bronze); }
@@ -845,7 +849,7 @@ async function renderLeaderboardCard(drivers) {
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 520, height: 1600, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 780, height: 2400, deviceScaleFactor: 2 });
     await page.setContent(buildLeaderboardHTML(drivers), { waitUntil: "networkidle0" });
     const card = await page.$(".card");
     return await card.screenshot({ type: "png" });
