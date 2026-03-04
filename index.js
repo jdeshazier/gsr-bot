@@ -692,11 +692,10 @@ function buildLeaderboardHTML(drivers) {
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: 1040px; background: #060606; }
+  body { width: 520px; background: #060606; }
 
   .card {
     width: 520px;
-    zoom: 2;
     border-radius: 20px;
     border: 3px solid var(--lime);
     position: relative; overflow: hidden;
@@ -852,7 +851,7 @@ async function renderLeaderboardCard(drivers) {
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1040, height: 3200, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 520, height: 1600, deviceScaleFactor: 2 });
     await page.setContent(buildLeaderboardHTML(drivers), { waitUntil: "networkidle0" });
     const card = await page.$(".card");
     return await card.screenshot({ type: "png" });
