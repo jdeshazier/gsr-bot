@@ -45,21 +45,24 @@ function getCurrentSeason() {
   return { year, season, label: `${year} S${season}` };
 }
 
-// iRacing season start dates → calculate current week number
+// iRacing seasons run 13 weeks each. Anchor: 2026 S1 started Dec 15, 2025.
 function getSeasonWeek() {
-  const now  = new Date();
-  const year = now.getFullYear();
-  const starts = [
-    { y: year - 1, s: 4, d: new Date(year - 1, 9, 7) },
-    { y: year,     s: 1, d: new Date(year, 0, 7) },
-    { y: year,     s: 2, d: new Date(year, 3, 7) },
-    { y: year,     s: 3, d: new Date(year, 6, 7) },
-    { y: year,     s: 4, d: new Date(year, 9, 7) },
-  ];
-  let cur = starts[0];
-  for (const entry of starts) { if (now >= entry.d) cur = entry; }
-  const week = Math.max(1, Math.floor((now - cur.d) / (7 * 24 * 60 * 60 * 1000)) + 1);
-  return { year: cur.y, season: cur.s, week, label: `${cur.y} S${cur.s} · Week ${week}` };
+  const now       = new Date();
+  const WEEK_MS   = 7 * 24 * 60 * 60 * 1000;
+  const SEASON_MS = 13 * WEEK_MS;
+  const anchor    = new Date(2025, 11, 15);   // Dec 15, 2025 = 2026 S1 Week 1
+
+  const elapsed      = now - anchor;
+  const seasonOffset = Math.floor(elapsed / SEASON_MS);
+  const seasonStart  = new Date(anchor.getTime() + seasonOffset * SEASON_MS);
+
+  const totalIdx  = seasonOffset;              // anchor is S1 (index 0)
+  const seasonNum = ((totalIdx % 4) + 4) % 4 + 1;
+  const yearAdj   = Math.floor(totalIdx / 4);
+  const year      = 2026 + yearAdj;
+
+  const week = Math.min(13, Math.max(1, Math.floor((now - seasonStart) / WEEK_MS) + 1));
+  return { year, season: seasonNum, week, label: `${year} S${seasonNum} · Week ${week} of 13` };
 }
 
 // ====================== STORAGE ======================
