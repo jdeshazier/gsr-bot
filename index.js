@@ -45,6 +45,23 @@ function getCurrentSeason() {
   return { year, season, label: `${year} S${season}` };
 }
 
+// iRacing season start dates → calculate current week number
+function getSeasonWeek() {
+  const now  = new Date();
+  const year = now.getFullYear();
+  const starts = [
+    { y: year - 1, s: 4, d: new Date(year - 1, 9, 7) },
+    { y: year,     s: 1, d: new Date(year, 0, 7) },
+    { y: year,     s: 2, d: new Date(year, 3, 7) },
+    { y: year,     s: 3, d: new Date(year, 6, 7) },
+    { y: year,     s: 4, d: new Date(year, 9, 7) },
+  ];
+  let cur = starts[0];
+  for (const entry of starts) { if (now >= entry.d) cur = entry; }
+  const week = Math.max(1, Math.floor((now - cur.d) / (7 * 24 * 60 * 60 * 1000)) + 1);
+  return { year: cur.y, season: cur.s, week, label: `${cur.y} S${cur.s} · Week ${week}` };
+}
+
 // ====================== STORAGE ======================
 const DATA_DIR       = "/app/data";
 const LINKED_FILE    = path.join(DATA_DIR, "linked-drivers.json");
@@ -613,6 +630,227 @@ async function renderStatsCard(stats, avatarB64) {
   }
 }
 
+// ====================== LEADERBOARD CARD ======================
+function buildLeaderboardHTML(drivers) {
+  const { label: seasonWeekLabel } = getSeasonWeek();
+  const maxIR = Math.max(...drivers.map(d => d.lastIRating ?? 0), 1);
+
+  const rowsHTML = drivers.map((d, i) => {
+    const pos      = i + 1;
+    const isTop3   = pos <= 3;
+    const posClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "normal";
+    const barClass = pos === 1 ? "gold" : pos === 2 ? "silver" : pos === 3 ? "bronze" : "lime";
+    const ir       = d.lastIRating ?? 0;
+    const pct      = Math.round((ir / maxIR) * 100);
+
+    let changeHTML;
+    if (d.lastChange === undefined || d.lastChange === 0) {
+      changeHTML = `<div class="change neu">—</div>`;
+    } else if (d.lastChange > 0) {
+      changeHTML = `<div class="change pos">▲ +${d.lastChange}</div>`;
+    } else {
+      changeHTML = `<div class="change neg">▼ ${d.lastChange}</div>`;
+    }
+
+    return `
+      <div class="driver-row${isTop3 ? " top3" : ""}">
+        <div class="row-main">
+          <div class="pos ${posClass}">${pos}</div>
+          <div class="name">${d.iracingName || "Unknown"}</div>
+          <div class="ir">${ir.toLocaleString()}</div>
+          ${changeHTML}
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar ${barClass}" style="width: ${pct}%"></div>
+        </div>
+      </div>`;
+  }).join("\n");
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Barlow+Condensed:wght@400;600;700;800;900&display=swap');
+
+  :root {
+    --lime: #a8d000;
+    --lime-bright: #c2f000;
+    --lime-dim: rgba(168,208,0,0.15);
+    --text: #ffffff;
+    --text-muted: rgba(255,255,255,0.45);
+    --gold: #FFD700;
+    --silver: #C0C0C0;
+    --bronze: #CD7F32;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { width: 520px; background: #060606; }
+
+  .card {
+    width: 520px;
+    border-radius: 20px;
+    border: 3px solid var(--lime);
+    position: relative; overflow: hidden;
+    font-family: 'Chakra Petch', monospace;
+    color: var(--text);
+    display: flex; flex-direction: column;
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,0.9),
+      0 0 22px rgba(168,208,0,0.75),
+      0 0 65px rgba(168,208,0,0.35),
+      inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+
+  /* ---- Header ---- */
+  .header { position: relative; padding: 20px 20px 16px; text-align: center; overflow: hidden; }
+  .header-carbon {
+    position: absolute; inset: 0;
+    background-image: url('data:image/png;base64,${B64_CARBON}');
+    background-size: cover; background-position: center;
+  }
+  .header-overlay { position: absolute; inset: 0; background: rgba(6,6,6,0.75); }
+  .header-inner   { position: relative; z-index: 1; }
+  .title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 32px; font-weight: 900;
+    letter-spacing: 0.15em;
+    text-transform: uppercase; color: #fff;
+    text-shadow: 0 0 20px rgba(168,208,0,0.3);
+  }
+  .subtitle {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 13px; font-weight: 600;
+    letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--lime);
+    margin-top: 2px;
+  }
+
+  .stripe {
+    height: 3px; flex-shrink: 0;
+    background: linear-gradient(90deg, transparent 0%, var(--lime) 20%, var(--lime) 80%, transparent 100%);
+  }
+
+  /* ---- Body ---- */
+  .body { position: relative; flex: 1; overflow: hidden; }
+  .body-carbon {
+    position: absolute; inset: 0;
+    background-image: url('data:image/png;base64,${B64_CARBON}');
+    background-size: cover; background-position: center bottom;
+  }
+  .body-overlay { position: absolute; inset: 0; background: rgba(6,6,6,0.88); }
+  .body-inner   { position: relative; z-index: 1; padding: 12px 16px; }
+
+  /* ---- Driver rows ---- */
+  .driver-row { padding: 8px 12px 10px; border-radius: 8px; margin-bottom: 4px; }
+  .driver-row.top3 {
+    background: rgba(168,208,0,0.06);
+    border: 1px solid rgba(168,208,0,0.12);
+  }
+  .driver-row:not(.top3) {
+    background: rgba(0,0,0,0.25);
+    border: 1px solid rgba(255,255,255,0.04);
+  }
+
+  .row-main { display: flex; align-items: center; gap: 10px; }
+
+  .pos {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 22px; font-weight: 900;
+    width: 32px; text-align: center; line-height: 1;
+  }
+  .pos.gold   { color: var(--gold); }
+  .pos.silver { color: var(--silver); }
+  .pos.bronze { color: var(--bronze); }
+  .pos.normal { color: rgba(255,255,255,0.4); }
+
+  .name {
+    flex: 1;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 17px; font-weight: 700;
+    letter-spacing: 0.04em; text-transform: uppercase;
+    color: #fff; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .ir {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 20px; font-weight: 800;
+    color: #fff; min-width: 55px; text-align: right;
+  }
+  .change {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 14px; font-weight: 700;
+    min-width: 65px; text-align: right;
+  }
+  .change.pos { color: #4ade80; }
+  .change.neg { color: #f87171; }
+  .change.neu { color: rgba(255,255,255,0.35); }
+
+  .progress-track {
+    height: 3px; background: rgba(255,255,255,0.06);
+    border-radius: 2px; margin-top: 6px; overflow: hidden;
+  }
+  .progress-bar { height: 100%; border-radius: 2px; }
+  .progress-bar.gold   { background: var(--gold); }
+  .progress-bar.silver { background: var(--silver); }
+  .progress-bar.bronze { background: var(--bronze); }
+  .progress-bar.lime   { background: var(--lime); }
+
+  /* ---- Footer ---- */
+  .footer {
+    height: 36px; flex-shrink: 0;
+    background: rgba(0,0,0,0.72);
+    border-top: 1px solid rgba(168,208,0,0.18);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; position: relative; z-index: 2;
+  }
+  .ft { font-family: 'Barlow Condensed', sans-serif; font-size: 11px; letter-spacing: 0.1em; color: rgba(255,255,255,0.55); text-transform: uppercase; font-weight: 600; }
+  .fp { font-family: 'Barlow Condensed', sans-serif; font-size: 11px; letter-spacing: 0.1em; color: rgba(168,208,0,0.85); font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="header-carbon"></div>
+    <div class="header-overlay"></div>
+    <div class="header-inner">
+      <div class="title">GSR LEADERBOARD</div>
+      <div class="subtitle">Sports Car · iRating Rankings</div>
+    </div>
+  </div>
+  <div class="stripe"></div>
+  <div class="body">
+    <div class="body-carbon"></div>
+    <div class="body-overlay"></div>
+    <div class="body-inner">
+      ${rowsHTML}
+    </div>
+  </div>
+  <div class="footer">
+    <span class="ft">Gamma Sim Racing · iRacing Data</span>
+    <span class="fp">${seasonWeekLabel}</span>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+async function renderLeaderboardCard(drivers) {
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 520, height: 1600, deviceScaleFactor: 2 });
+    await page.setContent(buildLeaderboardHTML(drivers), { waitUntil: "networkidle0" });
+    const card = await page.$(".card");
+    return await card.screenshot({ type: "png" });
+  } finally {
+    await browser.close();
+  }
+}
+
 // ====================== EXPRESS ======================
 const app = express();
 const PORT          = process.env.PORT || 3000;
@@ -859,37 +1097,12 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
       console.log("Weekly baseline saved.");
     }
 
-    const embedColor   = drivers[0]?.lastChange > 0 ? 0x00cc66 : drivers[0]?.lastChange < 0 ? 0xff4444 : 0x00ff88;
-    const totalDrivers = drivers.length;
-    const displayed    = Math.min(totalDrivers, 20);
+    const displayed    = drivers.slice(0, 20);
+    const imageBuffer  = await renderLeaderboardCard(displayed);
+    const attachment   = new AttachmentBuilder(imageBuffer, { name: "leaderboard.png" });
 
-    const embed = new EmbedBuilder()
-      .setColor(embedColor)
-      .setThumbnail("https://cdn.discordapp.com/attachments/1396172486558613514/1402298298450186350/Maybe.png?ex=699a6acf&is=6999194f&hm=5bd0de5d8200e0af87742858135e252c608bc6ad1d144046203fee96edbd8d17&")
-      .setDescription("**🏁 GSR iRating Leaderboard**")
-      .setTimestamp();
-
-    drivers.slice(0, 20).forEach((d, i) => {
-      const medal  = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}️⃣`;
-      const change = d.lastChange === undefined ? ""
-        : d.lastChange > 0 ? ` 🟢 **+${d.lastChange}** ⬆️`
-        : d.lastChange < 0 ? ` 🔴 **${d.lastChange}** ⬇️`
-        : ` ⚪ **0**`;
-      embed.addFields({
-        name:   `${medal} **${i + 1}.** ${d.iracingName || "Unknown"}`,
-        value:  `**${d.lastIRating ?? "??"}** iR${change}`,
-        inline: false
-      });
-    });
-
-    embed.setFooter({
-      text: displayed < totalDrivers
-        ? `Showing top ${displayed} of ${totalDrivers} drivers`
-        : `Total drivers: ${totalDrivers}`
-    });
-
-    if (isInteraction) await interactionOrChannel.editReply({ embeds: [embed] });
-    else               await interactionOrChannel.send({ embeds: [embed] });
+    if (isInteraction) await interactionOrChannel.editReply({ files: [attachment] });
+    else               await interactionOrChannel.send({ files: [attachment] });
 
   } catch (err) {
     console.error("Leaderboard error:", err);
