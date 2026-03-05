@@ -195,10 +195,22 @@ async function checkIRacingNews() {
     const feed = await rssParser.parseURL("https://www.iracing.com/feed/");
     if (!feed.items || feed.items.length === 0) return;
 
-    const latest      = feed.items[0];
-    const latestUrl   = latest.link;
     const lastSeenUrl = loadLastNewsUrl();
 
+    // Skip esports, promotional, and paint booth content
+    const BLOCKED = [
+      /esports?/i, /paint\s*booth/i, /partner/i, /sponsor/i,
+      /giveaway/i, /sweepstakes/i, /promotion/i, /world\s*championship/i,
+    ];
+
+    // Find the newest article that passes the filter
+    const latest = feed.items.find(item => {
+      const title = item.title || "";
+      return !BLOCKED.some(rx => rx.test(title));
+    });
+    if (!latest) return;
+
+    const latestUrl = latest.link;
     if (latestUrl === lastSeenUrl) return;
 
     saveLastNewsUrl(latestUrl);
