@@ -199,8 +199,9 @@ async function checkIRacingNews() {
 
     // Skip esports, promotional, and paint booth content
     const BLOCKED = [
-      /esports?/i, /paint\s*booth/i, /partner/i, /sponsor/i,
+      /esports?/i, /enascar/i, /paint\s*booth/i, /partner/i, /sponsor/i,
       /giveaway/i, /sweepstakes/i, /promotion/i, /world\s*championship/i,
+      /coca[\s-]?cola/i, /playoffs?/i, /feature\s*#?\d/i,
     ];
 
     // Find the newest article that passes the filter
