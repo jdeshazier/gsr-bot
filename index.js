@@ -281,26 +281,24 @@ async function fetchDriverStats(user) {
   }
 
   // Get license class from member info (real-time), fall back to chart data
-  const LICENSE_LETTERS = { 1: "R", 2: "D", 3: "C", 4: "B", 5: "A" };
-  const sportsCarLicense = Array.isArray(memberInfo?.licenses)
-    ? memberInfo.licenses.find(l => l.category_id === 5)
-    : null;
-  console.log("Member info licenses:", JSON.stringify(memberInfo?.licenses)?.slice(0, 500));
-  console.log("Sports car license:", JSON.stringify(sportsCarLicense));
-  console.log("rawSR from chart:", rawSR);
-  const srClass = sportsCarLicense
-    ? (LICENSE_LETTERS[sportsCarLicense.group_id] || sportsCarLicense.group_name?.[0] || "R")
-    : rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
-  console.log("Resolved srClass:", srClass);
-  if (sportsCarLicense?.safety_rating != null) {
-    currentSR = sportsCarLicense.safety_rating / 100;
+  // memberInfo.licenses is an object: {oval: {...}, sports_car: {...}, ...}
+  const sportsCarLicense = memberInfo?.licenses?.sports_car || null;
+  let srClass;
+  if (sportsCarLicense) {
+    // group_name is "Class B", "Class A", etc. — extract the letter
+    const gn = sportsCarLicense.group_name || "";
+    srClass = gn.replace("Class ", "").charAt(0) || "R";
+    // safety_rating is already a decimal (e.g. 2.54), not divided by 100
+    currentSR = sportsCarLicense.safety_rating ?? currentSR;
+  } else {
+    srClass = rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
   }
 
   // Parse per-season stats from member_recap
   function parseRecap(recap) {
     if (!recap) return null;
-    // member_recap may return sports car stats in a nested structure
-    const sc = recap.sports_car || recap;
+    // member_recap returns {year, stats: {starts, wins, ...}, ...}
+    const sc = recap.stats || recap;
     const starts = sc.starts ?? sc.races ?? 0;
     if (starts === 0 && !sc.wins && !sc.laps) return null;
     const wins  = sc.wins  ?? 0;
