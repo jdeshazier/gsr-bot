@@ -244,15 +244,23 @@ async function checkIRacingNews() {
 // ====================== STATS FETCHER ======================
 async function fetchDriverStats(user) {
   const token = await getValidAccessToken(user);
-  const { year } = getSeasonWeek();
+  const { year, season: currentQuarter } = getSeasonWeek();
 
-  const [careerData, recentData, irChartData, srChartData, memberInfo] = await Promise.all([
+  const [careerData, irChartData, srChartData, memberInfo,
+         recap1, recap2, recap3, recap4] = await Promise.all([
     fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career"),
-    fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_yearly"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/info"),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=1`),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=2`),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=3`),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=4`),
   ]);
+
+  // Log recap structure for debugging
+  console.log("Recap S1 keys:", recap1 ? Object.keys(recap1) : "null");
+  console.log("Recap S1 sample:", JSON.stringify(recap1)?.slice(0, 500));
 
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
 
@@ -280,26 +288,46 @@ async function fetchDriverStats(user) {
   const srClass = sportsCarLicense
     ? (LICENSE_LETTERS[sportsCarLicense.group_id] || sportsCarLicense.group_name?.[0] || "R")
     : rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
-  // Use member info SR if available (more accurate after season rollovers)
   if (sportsCarLicense?.safety_rating != null) {
     currentSR = sportsCarLicense.safety_rating / 100;
   }
 
-  const yearlyStats  = Array.isArray(recentData) ? recentData : (recentData?.stats || []);
-  const seasonData   = yearlyStats.find(s => s.category_id === 5 && s.year === year) || {};
+  // Parse per-season stats from member_recap
+  function parseRecap(recap) {
+    if (!recap) return null;
+    // member_recap may return sports car stats in a nested structure
+    const sc = recap.sports_car || recap;
+    const starts = sc.starts ?? sc.races ?? 0;
+    if (starts === 0 && !sc.wins && !sc.laps) return null;
+    const wins  = sc.wins  ?? 0;
+    const top5  = sc.top5  ?? 0;
+    const poles = sc.poles ?? 0;
+    return {
+      starts, wins, top5, poles,
+      laps:      sc.laps      ?? sc.laps_complete ?? 0,
+      lapsLed:   sc.laps_led  ?? 0,
+      avgStart:  sc.avg_start_position != null ? sc.avg_start_position.toFixed(2) : "—",
+      avgFinish: sc.avg_finish_position != null ? sc.avg_finish_position.toFixed(2) : "—",
+      avgPoints: sc.avg_points ? Math.round(sc.avg_points) : "—",
+      winPct:    starts > 0 ? Math.round((wins  / starts) * 100) : 0,
+      top5Pct:   starts > 0 ? Math.round((top5  / starts) * 100) : 0,
+      polePct:   starts > 0 ? Math.round((poles / starts) * 100) : 0,
+    };
+  }
 
-  const seasonStarts    = seasonData.starts    ?? 0;
-  const seasonWins      = seasonData.wins      ?? 0;
-  const seasonTop5      = seasonData.top5      ?? 0;
-  const seasonPoles     = seasonData.poles     ?? 0;
-  const seasonLaps      = seasonData.laps      ?? 0;
-  const seasonLapsLed   = seasonData.laps_led  ?? 0;
-  const seasonAvgStart  = seasonData.avg_start_position?.toFixed(2)  ?? "N/A";
-  const seasonAvgFinish = seasonData.avg_finish_position?.toFixed(2) ?? "N/A";
-  const seasonAvgPoints = seasonData.avg_points ? Math.round(seasonData.avg_points) : "N/A";
-  const seasonWinPct    = seasonStarts > 0 ? Math.round((seasonWins  / seasonStarts) * 100) : 0;
-  const seasonTop5Pct   = seasonStarts > 0 ? Math.round((seasonTop5  / seasonStarts) * 100) : 0;
-  const seasonPolePct   = seasonStarts > 0 ? Math.round((seasonPoles / seasonStarts) * 100) : 0;
+  const seasons = {
+    1: parseRecap(recap1),
+    2: parseRecap(recap2),
+    3: parseRecap(recap3),
+    4: parseRecap(recap4),
+  };
+
+  // Current season data for highlight boxes
+  const currentSeasonData = seasons[currentQuarter] || {
+    starts: 0, wins: 0, top5: 0, poles: 0, laps: 0, lapsLed: 0,
+    avgStart: "—", avgFinish: "—", avgPoints: "—",
+    winPct: 0, top5Pct: 0, polePct: 0,
+  };
 
   let irPercentile = null;
   if (currentIR > 0) {
@@ -320,6 +348,7 @@ async function fetchDriverStats(user) {
     name: user.iracingName,
     currentIR, irChange, irPercentile,
     currentSR: currentSR.toFixed(2), srClass, srChange: srChange.toFixed(2),
+    currentQuarter,
     career: {
       starts:    sportsCar.starts    ?? 0,
       wins:      sportsCar.wins      ?? 0,
@@ -334,12 +363,8 @@ async function fetchDriverStats(user) {
       top5Pct:   sportsCar.starts > 0 ? Math.round(((sportsCar.top5 ?? 0) / sportsCar.starts) * 100) : 0,
       polePct:   sportsCar.starts > 0 ? Math.round((sportsCar.poles / sportsCar.starts) * 100) : 0,
     },
-    season: {
-      starts: seasonStarts, wins: seasonWins, top5: seasonTop5, poles: seasonPoles,
-      laps: seasonLaps, lapsLed: seasonLapsLed,
-      avgStart: seasonAvgStart, avgFinish: seasonAvgFinish, avgPoints: seasonAvgPoints,
-      winPct: seasonWinPct, top5Pct: seasonTop5Pct, polePct: seasonPolePct,
-    }
+    season: currentSeasonData,
+    seasons,
   };
 }
 
@@ -358,6 +383,49 @@ async function getAvatarBase64(discordUser) {
   } catch {
     return B64_LOGO;
   }
+}
+
+function buildSeasonTable(stats) {
+  const q = stats.currentQuarter;
+  const rows = [
+    { label: "Starts",  key: "starts" },
+    { label: "Wins",    key: "wins",    pctKey: "winPct" },
+    { label: "Top 5",   key: "top5",    pctKey: "top5Pct" },
+    { label: "Laps",    key: "laps" },
+    { label: "Laps Led", key: "lapsLed" },
+    { label: "Avg Pts", key: "avgPoints" },
+  ];
+
+  function sVal(sData, key, pctKey) {
+    if (!sData) return "—";
+    const v = sData[key];
+    if (v == null || v === "—") return "—";
+    if (pctKey && sData[pctKey] != null) return `${v} (${sData[pctKey]}%)`;
+    return `${v}`;
+  }
+
+  const headerCols = [1, 2, 3, 4].map(s => {
+    const cls = s === q ? "th-s cur" : s > q ? "th-s fut" : "th-s";
+    return `<div class="${cls}">S${s}</div>`;
+  }).join("");
+
+  const tableRows = rows.map(r => {
+    const sCols = [1, 2, 3, 4].map(s => {
+      const cls = s === q ? "tvs cur" : s > q ? "tvs fut" : "tvs";
+      return `<span class="${cls}">${sVal(stats.seasons[s], r.key, r.pctKey)}</span>`;
+    }).join("");
+    const cVal = r.pctKey
+      ? `${stats.career[r.key]} (${stats.career[r.pctKey]}%)`
+      : `${stats.career[r.key]}`;
+    return `<div class="trow"><span class="tl">${r.label}</span>${sCols}<span class="tvc">${cVal}</span></div>`;
+  }).join("\n      ");
+
+  return `<div class="table-head">
+        <div class="th-sp"></div>
+        ${headerCols}
+        <div class="th-c">Career</div>
+      </div>
+      ${tableRows}`;
 }
 
 function buildStatsHTML(stats, avatarB64) {
@@ -395,10 +463,10 @@ function buildStatsHTML(stats, avatarB64) {
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: 460px; height: 780px; background: #060606; overflow: hidden; }
+  body { width: 520px; background: #060606; }
 
   .card {
-    width: 460px; height: 780px;
+    width: 520px;
     border-radius: 20px;
     border: 3px solid var(--lime);
     position: relative; overflow: hidden;
@@ -548,17 +616,21 @@ function buildStatsHTML(stats, avatarB64) {
   .bp    { font-size: 11px; font-weight: 700; color: var(--lime); margin-top: 1px; }
 
   .table-head { display: flex; padding: 0 8px 3px; }
-  .th-sp { flex: 1; }
-  .th-s  { width: 76px; text-align: center; font-size: 9px; font-weight: 700; letter-spacing: 0.16em; color: var(--lime); text-transform: uppercase; }
-  .th-c  { width: 76px; text-align: right;  font-size: 9px; font-weight: 700; letter-spacing: 0.16em; color: rgba(255,255,255,0.75); text-transform: uppercase; }
+  .th-sp { width: 80px; }
+  .th-s  { flex: 1; text-align: center; font-size: 9px; font-weight: 700; letter-spacing: 0.12em; color: var(--lime); text-transform: uppercase; }
+  .th-s.cur { color: var(--lime-bright); }
+  .th-s.fut { color: rgba(255,255,255,0.25); }
+  .th-c  { width: 72px; text-align: right;  font-size: 9px; font-weight: 700; letter-spacing: 0.12em; color: rgba(255,255,255,0.75); text-transform: uppercase; }
 
   .trow { display: flex; align-items: center; padding: 4px 8px; border-radius: 5px; }
   .trow:nth-child(odd)  { background: rgba(0,0,0,0.32); }
   .trow:nth-child(even) { background: rgba(0,0,0,0.12); }
 
-  .tl  { flex: 1; font-size: 10.5px; letter-spacing: 0.1em; color: rgba(255,255,255,0.82); text-transform: uppercase; }
-  .tvs { width: 76px; text-align: center; font-family: 'Barlow Condensed', sans-serif; font-size: 16px; font-weight: 700; color: #ffffff; }
-  .tvc { width: 76px; text-align: right;  font-family: 'Barlow Condensed', sans-serif; font-size: 16px; font-weight: 600; color: rgba(255,255,255,0.72); }
+  .tl  { width: 80px; font-size: 10px; letter-spacing: 0.08em; color: rgba(255,255,255,0.82); text-transform: uppercase; }
+  .tvs { flex: 1; text-align: center; font-family: 'Barlow Condensed', sans-serif; font-size: 14px; font-weight: 700; color: #ffffff; }
+  .tvs.cur { color: var(--lime-bright); }
+  .tvs.fut { color: rgba(255,255,255,0.2); }
+  .tvc { width: 72px; text-align: right;  font-family: 'Barlow Condensed', sans-serif; font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.72); }
 
   .footer {
     flex-shrink: 0; height: 32px;
@@ -619,18 +691,8 @@ function buildStatsHTML(stats, avatarB64) {
         <div class="bstat"><div class="bv sm">${stats.season.avgFinish}</div><div class="bl">Avg Finish</div></div>
       </div>
 
-      <div class="sec-title">Season vs Career</div>
-      <div class="table-head">
-        <div class="th-sp"></div>
-        <div class="th-s">Season</div>
-        <div class="th-c">Career</div>
-      </div>
-      <div class="trow"><span class="tl">Starts</span><span class="tvs">${stats.season.starts}</span><span class="tvc">${stats.career.starts}</span></div>
-      <div class="trow"><span class="tl">Wins</span><span class="tvs">${stats.season.wins} (${stats.season.winPct}%)</span><span class="tvc">${stats.career.wins} (${stats.career.winPct}%)</span></div>
-      <div class="trow"><span class="tl">Top 5</span><span class="tvs">${stats.season.top5} (${stats.season.top5Pct}%)</span><span class="tvc">${stats.career.top5} (${stats.career.top5Pct}%)</span></div>
-      <div class="trow"><span class="tl">Total Laps</span><span class="tvs">${stats.season.laps}</span><span class="tvc">${stats.career.laps}</span></div>
-      <div class="trow"><span class="tl">Laps Led</span><span class="tvs">${stats.season.lapsLed}</span><span class="tvc">${stats.career.lapsLed}</span></div>
-      <div class="trow"><span class="tl">Avg Points</span><span class="tvs">${stats.season.avgPoints}</span><span class="tvc">${stats.career.avgPoints}</span></div>
+      <div class="sec-title">Season Breakdown</div>
+      ${buildSeasonTable(stats)}
 
     </div>
     <div class="footer">
@@ -651,9 +713,10 @@ async function renderStatsCard(stats, avatarB64) {
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 460, height: 780, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 520, height: 900, deviceScaleFactor: 2 });
     await page.setContent(buildStatsHTML(stats, avatarB64), { waitUntil: "networkidle0" });
-    return await page.screenshot({ type: "png" });
+    const card = await page.$(".card");
+    return await card.screenshot({ type: "png" });
   } finally {
     await browser.close();
   }
