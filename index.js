@@ -259,8 +259,11 @@ async function fetchDriverStats(user) {
   ]);
 
   // Log recap structure for debugging
-  console.log("Recap S1 keys:", recap1 ? Object.keys(recap1) : "null");
-  console.log("Recap S1 sample:", JSON.stringify(recap1)?.slice(0, 500));
+  console.log("Recap S1:", JSON.stringify(recap1?.stats)?.slice(0, 200));
+  console.log("Recap S2:", JSON.stringify(recap2?.stats)?.slice(0, 200));
+  console.log("Recap S3:", JSON.stringify(recap3?.stats)?.slice(0, 200));
+  console.log("Recap S4:", JSON.stringify(recap4?.stats)?.slice(0, 200));
+  console.log("Recap S1 year/season:", recap1?.year, recap1?.season);
 
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
 
