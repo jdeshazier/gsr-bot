@@ -244,13 +244,14 @@ async function checkIRacingNews() {
 // ====================== STATS FETCHER ======================
 async function fetchDriverStats(user) {
   const token = await getValidAccessToken(user);
-  const { year } = getCurrentSeason();
+  const { year } = getSeasonWeek();
 
-  const [careerData, recentData, irChartData, srChartData] = await Promise.all([
+  const [careerData, recentData, irChartData, srChartData, memberInfo] = await Promise.all([
     fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_career"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/stats/member_yearly"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
+    fetchIRacingData(token, "https://members-ng.iracing.com/data/member/info"),
   ]);
 
   const sportsCar = careerData?.stats?.find(s => s.category_id === 5) || {};
@@ -271,7 +272,18 @@ async function fetchDriverStats(user) {
     srChange   = (rawSR - prev) / 100;
   }
 
-  const srClass = rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
+  // Get license class from member info (real-time), fall back to chart data
+  const LICENSE_LETTERS = { 1: "R", 2: "D", 3: "C", 4: "B", 5: "A" };
+  const sportsCarLicense = Array.isArray(memberInfo?.licenses)
+    ? memberInfo.licenses.find(l => l.category_id === 5)
+    : null;
+  const srClass = sportsCarLicense
+    ? (LICENSE_LETTERS[sportsCarLicense.group_id] || sportsCarLicense.group_name?.[0] || "R")
+    : rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
+  // Use member info SR if available (more accurate after season rollovers)
+  if (sportsCarLicense?.safety_rating != null) {
+    currentSR = sportsCarLicense.safety_rating / 100;
+  }
 
   const yearlyStats  = Array.isArray(recentData) ? recentData : (recentData?.stats || []);
   const seasonData   = yearlyStats.find(s => s.category_id === 5 && s.year === year) || {};
@@ -349,7 +361,8 @@ async function getAvatarBase64(discordUser) {
 }
 
 function buildStatsHTML(stats, avatarB64) {
-  const { label: seasonLabel } = getCurrentSeason();
+  const { year, season } = getSeasonWeek();
+  const seasonLabel = `${year} S${season}`;
 
   const irChangeText = stats.irChange >= 0 ? `+${stats.irChange}` : `${stats.irChange}`;
   const srChangeText = parseFloat(stats.srChange) >= 0 ? `+${stats.srChange}` : `${stats.srChange}`;
