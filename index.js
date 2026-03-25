@@ -252,10 +252,10 @@ async function fetchDriverStats(user) {
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/chart_data?chart_type=3&category_id=5"),
     fetchIRacingData(token, "https://members-ng.iracing.com/data/member/info"),
-    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=1`),
-    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=2`),
-    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=3`),
-    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?year=${year}&quarter=4`),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?season_year=${year}&season_quarter=1`),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?season_year=${year}&season_quarter=2`),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?season_year=${year}&season_quarter=3`),
+    fetchIRacingData(token, `https://members-ng.iracing.com/data/stats/member_recap?season_year=${year}&season_quarter=4`),
   ]);
 
   // Log recap structure for debugging
@@ -285,9 +285,13 @@ async function fetchDriverStats(user) {
   const sportsCarLicense = Array.isArray(memberInfo?.licenses)
     ? memberInfo.licenses.find(l => l.category_id === 5)
     : null;
+  console.log("Member info licenses:", JSON.stringify(memberInfo?.licenses)?.slice(0, 500));
+  console.log("Sports car license:", JSON.stringify(sportsCarLicense));
+  console.log("rawSR from chart:", rawSR);
   const srClass = sportsCarLicense
     ? (LICENSE_LETTERS[sportsCarLicense.group_id] || sportsCarLicense.group_name?.[0] || "R")
     : rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
+  console.log("Resolved srClass:", srClass);
   if (sportsCarLicense?.safety_rating != null) {
     currentSR = sportsCarLicense.safety_rating / 100;
   }
