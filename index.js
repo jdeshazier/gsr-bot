@@ -2,6 +2,7 @@ require("dotenv").config();
 const {
   Client,
   GatewayIntentBits,
+  Partials,
   REST,
   Routes,
   EmbedBuilder,
@@ -27,7 +28,8 @@ const {
   ANNOUNCE_CHANNEL_ID
 } = process.env;
 
-const NEWS_CHANNEL_ID = "1410663955759759410";
+const NEWS_CHANNEL_ID     = "1410663955759759410";
+const EVENTS_CHANNEL_ID   = "1485670245632053430";
 
 if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
     !IRACING_CLIENT_SECRET || !IRACING_REDIRECT_URI || !ANNOUNCE_CHANNEL_ID) {
@@ -105,6 +107,179 @@ function saveLastNewsUrl(url) {
   } catch (err) {
     console.error("Error saving last news URL:", err.message);
   }
+}
+
+// ====================== TIME TRIAL ======================
+const TIMETRIAL_FILE = path.join(DATA_DIR, "timetrial.json");
+
+const TT_POOLS = {
+  GT3: {
+    color: 0x2ecc71,
+    cars: [
+      "BMW M4 GT3", "Porsche 911 GT3 R", "Ferrari 296 GT3",
+      "McLaren 720S GT3 EVO", "Mercedes-AMG GT3 2020",
+      "Lamborghini Huracán GT3 EVO", "Audi R8 LMS EVO II GT3",
+      "Aston Martin Vantage GT3"
+    ],
+    tracks: [
+      "Spa-Francorchamps", "Monza", "Watkins Glen", "Road America",
+      "Suzuka", "Mount Panorama", "Nürburgring GP", "Imola",
+      "Laguna Seca", "Silverstone", "Brands Hatch GP", "Barber Motorsports Park"
+    ]
+  },
+  LMP2: {
+    color: 0x3498db,
+    cars: ["Dallara P217"],
+    tracks: [
+      "Daytona International Speedway", "Sebring", "Circuit of the Americas",
+      "Interlagos", "Fuji Speedway", "Spa-Francorchamps", "Monza",
+      "Road America", "Watkins Glen", "Nürburgring GP", "Le Mans"
+    ]
+  },
+  GTP: {
+    color: 0xf1c40f,
+    cars: ["Porsche 963 GTP", "Cadillac V-Series.R GTP", "BMW M Hybrid V8"],
+    tracks: [
+      "Daytona International Speedway", "Sebring", "Circuit of the Americas",
+      "Interlagos", "Fuji Speedway", "Spa-Francorchamps", "Monza",
+      "Road America", "Watkins Glen", "Le Mans", "Suzuka"
+    ]
+  }
+};
+
+function loadTimeTrial() {
+  try {
+    if (!fs.existsSync(TIMETRIAL_FILE)) return null;
+    return JSON.parse(fs.readFileSync(TIMETRIAL_FILE, "utf8"));
+  } catch { return null; }
+}
+
+function saveTimeTrial(data) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(TIMETRIAL_FILE, JSON.stringify(data, null, 2), "utf8");
+  } catch (err) {
+    console.error("Error saving timetrial:", err.message);
+  }
+}
+
+function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+function generateTimeTrial() {
+  const classKey = pickRandom(Object.keys(TT_POOLS));
+  const pool     = TT_POOLS[classKey];
+  const car      = pickRandom(pool.cars);
+  const track    = pickRandom(pool.tracks);
+  const now      = new Date();
+  const deadline = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of month
+  const monthName = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+
+  return {
+    month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`,
+    monthLabel: monthName,
+    classKey,
+    car,
+    track,
+    color: pool.color,
+    deadline: deadline.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+    messageId: null,
+    submissions: {},  // { discordId: { name, times: [{ time, timeMs, date }] } }
+    signups: []       // discordId[]
+  };
+}
+
+function parseTimeString(str) {
+  // Accepts "1:32.456" or "92.456"
+  const match = str.match(/^(?:(\d+):)?(\d+)\.(\d{1,3})$/);
+  if (!match) return null;
+  const mins = parseInt(match[1] || "0", 10);
+  const secs = parseInt(match[2], 10);
+  const ms   = match[3].padEnd(3, "0");
+  return { formatted: `${mins}:${secs.toString().padStart(2, "0")}.${ms}`, ms: mins * 60000 + secs * 1000 + parseInt(ms) };
+}
+
+function buildTimeTrialEmbed(tt) {
+  const pool = TT_POOLS[tt.classKey];
+
+  // Build standings from submissions
+  const standings = Object.entries(tt.submissions)
+    .map(([id, sub]) => {
+      const best = sub.times.reduce((a, b) => a.timeMs < b.timeMs ? a : b);
+      return { name: sub.name, time: best.formatted, timeMs: best.timeMs, attempts: sub.times.length };
+    })
+    .sort((a, b) => a.timeMs - b.timeMs);
+
+  let standingsText = "No submissions yet — be the first!";
+  if (standings.length > 0) {
+    standingsText = "```\n #  Driver               Best Time   Attempts\n";
+    standings.forEach((s, i) => {
+      const pos  = String(i + 1).padStart(2, " ");
+      const name = s.name.length > 18 ? s.name.slice(0, 17) + "…" : s.name.padEnd(18, " ");
+      standingsText += ` ${pos}. ${name}  ${s.time}    ${s.attempts}/5\n`;
+    });
+    standingsText += "```";
+  }
+
+  const totalDrivers  = Object.keys(tt.submissions).length;
+  const totalSignups  = tt.signups?.length || 0;
+  const footerText    = totalDrivers > 0
+    ? `${totalDrivers} submission${totalDrivers !== 1 ? "s" : ""} • ${totalSignups} signed up`
+    : `${totalSignups} signed up`;
+
+  return new EmbedBuilder()
+    .setColor(pool.color)
+    .setTitle(`🏁 MONTHLY TIME TRIAL — ${tt.monthLabel.toUpperCase()}`)
+    .addFields(
+      { name: "🏎️ Car",      value: tt.car,      inline: true },
+      { name: "🛤️ Track",    value: tt.track,    inline: true },
+      { name: "📋 Class",    value: tt.classKey,  inline: true },
+      { name: "⚙️ Setup",    value: "Fixed",      inline: true },
+      { name: "📅 Deadline", value: tt.deadline,   inline: true },
+      { name: "\u200B",      value: "\u200B",      inline: true },
+      { name: "📜 Rules",    value: [
+          "• Fixed setup only — no modifications",
+          "• Submit with `/submitlap 1:32.456` + attach a **screenshot**",
+          "• Screenshot is **required** for verification",
+          "• Maximum **5 submissions** per driver (fastest counts)",
+          "• React with ✅ below to enter!"
+        ].join("\n"), inline: false },
+      { name: "🏆 Current Standings", value: standingsText, inline: false }
+    )
+    .setFooter({ text: footerText + " • Updates daily" })
+    .setTimestamp();
+}
+
+async function postOrUpdateTimeTrial(client) {
+  const tt = loadTimeTrial();
+  if (!tt) return;
+
+  const channel = client.channels.cache.get(EVENTS_CHANNEL_ID);
+  if (!channel) { console.log("Events channel not found:", EVENTS_CHANNEL_ID); return; }
+
+  const embed = buildTimeTrialEmbed(tt);
+
+  if (tt.messageId) {
+    try {
+      const msg = await channel.messages.fetch(tt.messageId);
+      await msg.edit({ embeds: [embed] });
+      console.log("Time trial embed updated.");
+      return;
+    } catch {
+      console.log("Could not find previous time trial message, posting new one.");
+    }
+  }
+
+  const msg = await channel.send({ content: "🏁 **New Monthly Time Trial!** React with ✅ to enter!", embeds: [embed] });
+  await msg.react("✅");
+  tt.messageId = msg.id;
+  saveTimeTrial(tt);
+  console.log("Time trial posted for", tt.monthLabel);
+}
+
+async function startNewTimeTrial(client) {
+  const tt = generateTimeTrial();
+  saveTimeTrial(tt);
+  await postOrUpdateTimeTrial(client);
 }
 
 // ====================== HELPERS ======================
@@ -971,7 +1146,13 @@ app.get("/", (req, res) => res.send("🏁 GSR Bot OAuth Server is running."));
 app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`));
 
 // ====================== DISCORD CLIENT ======================
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessageReactions
+  ],
+  partials: [Partials.Message, Partials.Reaction]
+});
 
 client.once("clientReady", () => {
   console.log("✅ Bot logged in!");
@@ -1076,6 +1257,53 @@ client.on("interactionCreate", async interaction => {
 
   if (interaction.commandName === "leaderboard") await showLeaderboard(interaction);
   if (interaction.commandName === "stats")       await showStats(interaction);
+
+  if (interaction.commandName === "submitlap") {
+    const timeStr    = interaction.options.getString("time");
+    const screenshot = interaction.options.getAttachment("screenshot");
+
+    if (!screenshot || !screenshot.contentType?.startsWith("image/")) {
+      return interaction.reply({ content: "❌ You must attach a **screenshot** of your lap time.", flags: 64 });
+    }
+
+    const parsed = parseTimeString(timeStr);
+    if (!parsed) {
+      return interaction.reply({ content: "❌ Invalid time format. Use `1:32.456` or `92.456`.", flags: 64 });
+    }
+
+    const tt = loadTimeTrial();
+    if (!tt) return interaction.reply({ content: "❌ No active time trial this month.", flags: 64 });
+
+    const userId = interaction.user.id;
+    if (!tt.submissions[userId]) {
+      tt.submissions[userId] = {
+        name: interaction.user.displayName || interaction.user.username,
+        times: []
+      };
+    }
+
+    const sub = tt.submissions[userId];
+    if (sub.times.length >= 5) {
+      return interaction.reply({ content: "❌ You've used all **5 submissions**. Your fastest time stands!", flags: 64 });
+    }
+
+    sub.times.push({ formatted: parsed.formatted, timeMs: parsed.ms, date: new Date().toISOString(), screenshotUrl: screenshot.url });
+    const best = sub.times.reduce((a, b) => a.timeMs < b.timeMs ? a : b);
+
+    // Add to signups if not already
+    if (!tt.signups.includes(userId)) tt.signups.push(userId);
+
+    saveTimeTrial(tt);
+
+    const remaining = 5 - sub.times.length;
+    await interaction.reply({
+      content: `✅ Lap time **${parsed.formatted}** recorded! Your best: **${best.formatted}** (${remaining} submission${remaining !== 1 ? "s" : ""} remaining)`,
+      flags: 64
+    });
+
+    // Update the embed with new standings
+    await postOrUpdateTimeTrial(client);
+  }
 });
 
 // ====================== STATS COMMAND ======================
@@ -1166,7 +1394,15 @@ const commands = [
   },
   { name: "myirating",   description: "Show your personal iRating and rank" },
   { name: "leaderboard", description: "Show the GSR iRating Leaderboard" },
-  { name: "stats",       description: "Show your Sports Car stats card" }
+  { name: "stats",       description: "Show your Sports Car stats card" },
+  {
+    name: "submitlap",
+    description: "Submit a lap time for the monthly time trial",
+    options: [
+      { name: "time",       description: "Your lap time (e.g. 1:32.456)", type: 3, required: true },
+      { name: "screenshot", description: "Screenshot proof of your lap time", type: 11, required: true }
+    ]
+  }
 ];
 
 const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
@@ -1181,11 +1417,37 @@ const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
 client.login(DISCORD_TOKEN);
 
+// ====================== REACTION HANDLER ======================
+client.on("messageReactionAdd", async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.emoji.name !== "✅") return;
+
+  const tt = loadTimeTrial();
+  if (!tt || tt.messageId !== reaction.message.id) return;
+
+  if (!tt.signups.includes(user.id)) {
+    tt.signups.push(user.id);
+    saveTimeTrial(tt);
+  }
+});
+
 // ====================== CRON ======================
-// Runs every Sunday at noon CST (18:00 UTC). saveBaseline=true so this is
-// the only call that updates lastIRating/lastChange in storage.
 const { CronJob } = require("cron");
+
+// Leaderboard: every Sunday at noon CST
 new CronJob("0 12 * * 0", async () => {
   const channel = client.channels.cache.get(ANNOUNCE_CHANNEL_ID);
   if (channel) await showLeaderboard(channel, true);
+}, null, true, "America/Chicago");
+
+// Time Trial: 1st of every month at 9:00 AM CST — post new trial
+new CronJob("0 9 1 * *", async () => {
+  await startNewTimeTrial(client);
+  console.log("Monthly time trial posted.");
+}, null, true, "America/Chicago");
+
+// Time Trial: daily at 8:00 AM CST — update standings embed
+new CronJob("0 8 * * *", async () => {
+  await postOrUpdateTimeTrial(client);
+  console.log("Time trial embed updated.");
 }, null, true, "America/Chicago");
