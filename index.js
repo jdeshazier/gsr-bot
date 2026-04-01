@@ -1154,10 +1154,19 @@ const client = new Client({
   partials: [Partials.Message, Partials.Reaction]
 });
 
-client.once("clientReady", () => {
+client.once("clientReady", async () => {
   console.log("✅ Bot logged in!");
   checkIRacingNews();
   setInterval(checkIRacingNews, 60 * 60 * 1000);
+
+  // On startup: post time trial if it's the 1st and no trial exists for this month
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const tt = loadTimeTrial();
+  if (!tt || tt.month !== currentMonth) {
+    console.log("Starting new monthly time trial for", currentMonth);
+    await startNewTimeTrial(client);
+  }
 });
 
 client.on("interactionCreate", async interaction => {
@@ -1419,15 +1428,24 @@ client.login(DISCORD_TOKEN);
 
 // ====================== REACTION HANDLER ======================
 client.on("messageReactionAdd", async (reaction, user) => {
-  if (user.bot) return;
-  if (reaction.emoji.name !== "✅") return;
+  try {
+    if (user.bot) return;
 
-  const tt = loadTimeTrial();
-  if (!tt || tt.messageId !== reaction.message.id) return;
+    // Fetch partials if needed (message may not be cached after restart)
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
 
-  if (!tt.signups.includes(user.id)) {
-    tt.signups.push(user.id);
-    saveTimeTrial(tt);
+    if (reaction.emoji.name !== "✅") return;
+
+    const tt = loadTimeTrial();
+    if (!tt || tt.messageId !== reaction.message.id) return;
+
+    if (!tt.signups.includes(user.id)) {
+      tt.signups.push(user.id);
+      saveTimeTrial(tt);
+    }
+  } catch (err) {
+    console.error("Error handling reaction:", err.message);
   }
 });
 
