@@ -1183,13 +1183,22 @@ client.once("clientReady", async () => {
   checkIRacingNews();
   setInterval(checkIRacingNews, 60 * 60 * 1000);
 
-  // On startup: post time trial if it's the 1st and no trial exists for this month
-  const now = new Date();
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const tt = loadTimeTrial();
-  if (!tt || tt.month !== currentMonth) {
-    console.log("Starting new monthly time trial for", currentMonth);
-    await startNewTimeTrial(client);
+  // On startup: post time trial if none exists for this month or if it never posted
+  try {
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const tt = loadTimeTrial();
+    if (!tt || tt.month !== currentMonth) {
+      console.log("Starting new monthly time trial for", currentMonth);
+      await startNewTimeTrial(client);
+    } else if (!tt.messageId) {
+      console.log("Time trial exists but was never posted, posting now...");
+      await postOrUpdateTimeTrial(client);
+    } else {
+      console.log("Time trial already posted for", currentMonth);
+    }
+  } catch (err) {
+    console.error("Error posting time trial on startup:", err);
   }
 });
 
