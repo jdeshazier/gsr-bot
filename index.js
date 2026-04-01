@@ -166,26 +166,35 @@ function saveTimeTrial(data) {
 
 function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-const TT_CONDITIONS = [
-  { timeOfDay: "10:00 AM", weather: "Clear Skies", temp: "72°F" },
-  { timeOfDay: "2:00 PM",  weather: "Clear Skies", temp: "82°F" },
-  { timeOfDay: "11:00 AM", weather: "Partly Cloudy", temp: "75°F" },
-  { timeOfDay: "3:00 PM",  weather: "Partly Cloudy", temp: "78°F" },
-  { timeOfDay: "9:00 AM",  weather: "Overcast", temp: "65°F" },
-  { timeOfDay: "1:00 PM",  weather: "Clear Skies", temp: "85°F" },
-  { timeOfDay: "4:00 PM",  weather: "Partly Cloudy", temp: "80°F" },
-  { timeOfDay: "12:00 PM", weather: "Clear Skies", temp: "77°F" },
+// iRacing session date/time + weather combos — drivers must all use the same settings
+const TT_WEATHER = [
+  { weather: "Clear Skies",   temp: "72°F" },
+  { weather: "Clear Skies",   temp: "82°F" },
+  { weather: "Clear Skies",   temp: "77°F" },
+  { weather: "Partly Cloudy", temp: "75°F" },
+  { weather: "Partly Cloudy", temp: "78°F" },
+  { weather: "Partly Cloudy", temp: "80°F" },
+  { weather: "Overcast",      temp: "65°F" },
+  { weather: "Overcast",      temp: "70°F" },
 ];
+
+const TT_TIMES = ["9:00 AM", "10:00 AM", "11:00 AM", "12:00 PM", "1:00 PM", "2:00 PM", "3:00 PM", "4:00 PM"];
 
 function generateTimeTrial() {
   const classKey   = pickRandom(Object.keys(TT_POOLS));
   const pool       = TT_POOLS[classKey];
   const car        = pickRandom(pool.cars);
   const track      = pickRandom(pool.tracks);
-  const conditions = pickRandom(TT_CONDITIONS);
+  const weatherObj = pickRandom(TT_WEATHER);
+  const timeOfDay  = pickRandom(TT_TIMES);
   const now        = new Date();
   const deadline   = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of month
   const monthName  = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+
+  // Pick a random date between the 5th and 25th of the month for the session
+  const sessionDay  = Math.floor(Math.random() * 21) + 5; // 5–25
+  const sessionDate = new Date(now.getFullYear(), now.getMonth(), sessionDay);
+  const sessionDateLabel = sessionDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 
   return {
     month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`,
@@ -193,7 +202,12 @@ function generateTimeTrial() {
     classKey,
     car,
     track,
-    conditions,
+    conditions: {
+      date: sessionDateLabel,
+      timeOfDay,
+      weather: weatherObj.weather,
+      temp: weatherObj.temp
+    },
     color: pool.color,
     deadline: deadline.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
     messageId: null,
@@ -251,12 +265,13 @@ function buildTimeTrialEmbed(tt) {
       { name: "⚙️ Setup",    value: "Fixed",      inline: true },
       { name: "📅 Deadline", value: tt.deadline,   inline: true },
       { name: "\u200B",      value: "\u200B",      inline: true },
-      { name: "🕐 Time of Day", value: tt.conditions?.timeOfDay || "2:00 PM", inline: true },
-      { name: "🌤️ Weather",    value: tt.conditions?.weather || "Clear Skies", inline: true },
-      { name: "🌡️ Temp",       value: tt.conditions?.temp || "75°F",          inline: true },
+      { name: "📆 Session Date", value: tt.conditions?.date || "TBD",            inline: false },
+      { name: "🕐 Time of Day", value: tt.conditions?.timeOfDay || "2:00 PM",    inline: true },
+      { name: "🌤️ Weather",     value: tt.conditions?.weather || "Clear Skies",  inline: true },
+      { name: "🌡️ Temp",        value: tt.conditions?.temp || "75°F",            inline: true },
       { name: "📜 Rules",    value: [
           "• Fixed setup only — no modifications",
-          `• Set conditions: **${tt.conditions?.timeOfDay || "2:00 PM"}**, **${tt.conditions?.weather || "Clear Skies"}**, **${tt.conditions?.temp || "75°F"}**`,
+          `• **Session settings:** Date: **${tt.conditions?.date || "TBD"}** | Time: **${tt.conditions?.timeOfDay || "2:00 PM"}** | Weather: **${tt.conditions?.weather || "Clear Skies"}** | Temp: **${tt.conditions?.temp || "75°F"}**`,
           "• Submit with `/submitlap 1:32.456` + attach a **screenshot**",
           "• Screenshot is **required** for verification",
           "• Maximum **5 submissions** per driver (fastest counts)",
@@ -1206,7 +1221,7 @@ client.once("clientReady", async () => {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const tt = loadTimeTrial();
-    if (!tt || tt.month !== currentMonth) {
+    if (!tt || tt.month !== currentMonth || !tt.conditions?.date) {
       console.log("Starting new monthly time trial for", currentMonth);
       await startNewTimeTrial(client);
     } else if (!tt.messageId) {
