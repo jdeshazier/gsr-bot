@@ -253,8 +253,11 @@ async function postOrUpdateTimeTrial(client) {
   const tt = loadTimeTrial();
   if (!tt) return;
 
-  const channel = client.channels.cache.get(EVENTS_CHANNEL_ID);
-  if (!channel) { console.log("Events channel not found:", EVENTS_CHANNEL_ID); return; }
+  let channel = client.channels.cache.get(EVENTS_CHANNEL_ID);
+  if (!channel) {
+    try { channel = await client.channels.fetch(EVENTS_CHANNEL_ID); }
+    catch { console.log("Events channel not found:", EVENTS_CHANNEL_ID); return; }
+  }
 
   const embed = buildTimeTrialEmbed(tt);
 
