@@ -7,7 +7,8 @@ const {
   Routes,
   EmbedBuilder,
   AttachmentBuilder,
-  PermissionsBitField
+  PermissionsBitField,
+  ChannelType
 } = require("discord.js");
 const express = require("express");
 const fetch = require("node-fetch");
@@ -260,11 +261,19 @@ async function postOrUpdateTimeTrial(client) {
   }
 
   const embed = buildTimeTrialEmbed(tt);
+  const isForum = channel.type === ChannelType.GuildForum;
 
+  // Update existing message/thread
   if (tt.messageId) {
     try {
-      const msg = await channel.messages.fetch(tt.messageId);
-      await msg.edit({ embeds: [embed] });
+      if (isForum && tt.threadId) {
+        const thread = await channel.threads.fetch(tt.threadId);
+        const msg = await thread.messages.fetch(tt.messageId);
+        await msg.edit({ embeds: [embed] });
+      } else {
+        const msg = await channel.messages.fetch(tt.messageId);
+        await msg.edit({ embeds: [embed] });
+      }
       console.log("Time trial embed updated.");
       return;
     } catch {
@@ -272,9 +281,21 @@ async function postOrUpdateTimeTrial(client) {
     }
   }
 
-  const msg = await channel.send({ content: "🏁 **New Monthly Time Trial!** React with ✅ to enter!", embeds: [embed] });
-  await msg.react("✅");
-  tt.messageId = msg.id;
+  // Create new post
+  if (isForum) {
+    const thread = await channel.threads.create({
+      name: `🏁 Monthly Time Trial — ${tt.monthLabel}`,
+      message: { content: "🏁 **New Monthly Time Trial!** React with ✅ to enter!", embeds: [embed] }
+    });
+    const starterMsg = await thread.fetchStarterMessage();
+    await starterMsg.react("✅");
+    tt.threadId = thread.id;
+    tt.messageId = starterMsg.id;
+  } else {
+    const msg = await channel.send({ content: "🏁 **New Monthly Time Trial!** React with ✅ to enter!", embeds: [embed] });
+    await msg.react("✅");
+    tt.messageId = msg.id;
+  }
   saveTimeTrial(tt);
   console.log("Time trial posted for", tt.monthLabel);
 }
