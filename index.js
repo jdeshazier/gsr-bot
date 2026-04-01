@@ -166,16 +166,17 @@ function saveTimeTrial(data) {
 
 function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-// iRacing session date/time + weather combos — drivers must all use the same settings
+// iRacing session weather/conditions pools — mirrors iRacing Test Drive settings
 const TT_WEATHER = [
-  { weather: "Clear Skies",   temp: "72°F" },
-  { weather: "Clear Skies",   temp: "82°F" },
-  { weather: "Clear Skies",   temp: "77°F" },
-  { weather: "Partly Cloudy", temp: "75°F" },
-  { weather: "Partly Cloudy", temp: "78°F" },
-  { weather: "Partly Cloudy", temp: "80°F" },
-  { weather: "Overcast",      temp: "65°F" },
-  { weather: "Overcast",      temp: "70°F" },
+  { cloud: "Clear",         temp: "72°F", humidity: "40%", windSpeed: "4 mph", windDir: "Northwest" },
+  { cloud: "Clear",         temp: "82°F", humidity: "35%", windSpeed: "6 mph", windDir: "Southwest" },
+  { cloud: "Clear",         temp: "77°F", humidity: "46%", windSpeed: "3 mph", windDir: "South" },
+  { cloud: "Partly Cloudy", temp: "75°F", humidity: "52%", windSpeed: "8 mph", windDir: "West" },
+  { cloud: "Partly Cloudy", temp: "78°F", humidity: "48%", windSpeed: "5 mph", windDir: "Northwest" },
+  { cloud: "Partly Cloudy", temp: "80°F", humidity: "55%", windSpeed: "7 mph", windDir: "East" },
+  { cloud: "Mostly Cloudy", temp: "68°F", humidity: "62%", windSpeed: "10 mph", windDir: "North" },
+  { cloud: "Overcast",      temp: "65°F", humidity: "70%", windSpeed: "12 mph", windDir: "Northeast" },
+  { cloud: "Overcast",      temp: "70°F", humidity: "58%", windSpeed: "9 mph", windDir: "Southeast" },
 ];
 
 const TT_TIMES = ["9:00 AM", "10:00 AM", "11:00 AM", "12:00 PM", "1:00 PM", "2:00 PM", "3:00 PM", "4:00 PM"];
@@ -205,8 +206,11 @@ function generateTimeTrial() {
     conditions: {
       date: sessionDateLabel,
       timeOfDay,
-      weather: weatherObj.weather,
-      temp: weatherObj.temp
+      cloud: weatherObj.cloud,
+      temp: weatherObj.temp,
+      humidity: weatherObj.humidity,
+      windSpeed: weatherObj.windSpeed,
+      windDir: weatherObj.windDir
     },
     color: pool.color,
     deadline: deadline.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
@@ -265,13 +269,16 @@ function buildTimeTrialEmbed(tt) {
       { name: "⚙️ Setup",    value: "Fixed",      inline: true },
       { name: "📅 Deadline", value: tt.deadline,   inline: true },
       { name: "\u200B",      value: "\u200B",      inline: true },
-      { name: "📆 Session Date", value: tt.conditions?.date || "TBD",            inline: false },
+      { name: "📆 Session Date", value: tt.conditions?.date || "TBD",             inline: false },
       { name: "🕐 Time of Day", value: tt.conditions?.timeOfDay || "2:00 PM",    inline: true },
-      { name: "🌤️ Weather",     value: tt.conditions?.weather || "Clear Skies",  inline: true },
+      { name: "☁️ Cloud Cover",  value: tt.conditions?.cloud || "Clear",          inline: true },
       { name: "🌡️ Temp",        value: tt.conditions?.temp || "75°F",            inline: true },
+      { name: "💨 Wind",         value: `${tt.conditions?.windSpeed || "5 mph"} ${tt.conditions?.windDir || "NW"}`, inline: true },
+      { name: "💧 Humidity",     value: tt.conditions?.humidity || "45%",         inline: true },
+      { name: "\u200B",          value: "\u200B",                                 inline: true },
       { name: "📜 Rules",    value: [
           "• Fixed setup only — no modifications",
-          `• **Session settings:** Date: **${tt.conditions?.date || "TBD"}** | Time: **${tt.conditions?.timeOfDay || "2:00 PM"}** | Weather: **${tt.conditions?.weather || "Clear Skies"}** | Temp: **${tt.conditions?.temp || "75°F"}**`,
+          "• **Use the exact session settings above** (date, time, weather)",
           "• Submit with `/submitlap 1:32.456` + attach a **screenshot**",
           "• Screenshot is **required** for verification",
           "• Maximum **5 submissions** per driver (fastest counts)",
@@ -1221,7 +1228,7 @@ client.once("clientReady", async () => {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const tt = loadTimeTrial();
-    if (!tt || tt.month !== currentMonth || !tt.conditions?.date) {
+    if (!tt || tt.month !== currentMonth || !tt.conditions?.windSpeed) {
       console.log("Starting new monthly time trial for", currentMonth);
       await startNewTimeTrial(client);
     } else if (!tt.messageId) {
