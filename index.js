@@ -1408,6 +1408,22 @@ client.on("interactionCreate", async interaction => {
       flags: 64
     });
 
+    // Post screenshot proof in the time trial thread
+    try {
+      const eventsChannel = client.channels.cache.get(EVENTS_CHANNEL_ID) || await client.channels.fetch(EVENTS_CHANNEL_ID);
+      if (tt.threadId) {
+        const thread = await eventsChannel.threads.fetch(tt.threadId);
+        const attemptNum = sub.times.length;
+        const isBest = best.timeMs === parsed.ms;
+        await thread.send({
+          content: `🏁 **${interaction.user.displayName || interaction.user.username}** submitted a lap time of **${parsed.formatted}**${isBest ? " ⚡ *New personal best!*" : ""} (Attempt ${attemptNum}/5)`,
+          files: [{ attachment: screenshot.url, name: `lap-proof-${interaction.user.username}.png` }]
+        });
+      }
+    } catch (err) {
+      console.error("Error posting screenshot to thread:", err.message);
+    }
+
     // Update the embed with new standings
     await postOrUpdateTimeTrial(client);
   }
