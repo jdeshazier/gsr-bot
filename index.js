@@ -123,27 +123,52 @@ const TT_POOLS = {
       "Aston Martin Vantage GT3"
     ],
     tracks: [
-      "Spa-Francorchamps", "Monza", "Watkins Glen", "Road America",
-      "Suzuka", "Mount Panorama", "Nürburgring GP", "Imola",
-      "Laguna Seca", "Silverstone", "Brands Hatch GP", "Barber Motorsports Park"
+      "Circuit de Spa-Francorchamps - Grand Prix Pits",
+      "Autodromo Nazionale Monza - Grand Prix",
+      "Watkins Glen International - Boot",
+      "Road America - Full Course",
+      "Suzuka International Racing Course - Grand Prix",
+      "Mount Panorama Circuit",
+      "Nürburgring Combined - GP",
+      "Autodromo Internazionale Enzo e Dino Ferrari - Grand Prix",
+      "WeatherTech Raceway at Laguna Seca - Full Course",
+      "Silverstone Circuit - Grand Prix",
+      "Brands Hatch Circuit - Grand Prix",
+      "Barber Motorsports Park - Full Course"
     ]
   },
   LMP2: {
     color: 0x3498db,
     cars: ["Dallara P217"],
     tracks: [
-      "Daytona International Speedway", "Sebring", "Circuit of the Americas",
-      "Interlagos", "Fuji Speedway", "Spa-Francorchamps", "Monza",
-      "Road America", "Watkins Glen", "Nürburgring GP", "Le Mans"
+      "Daytona International Speedway - Road Course",
+      "Sebring International Raceway - International",
+      "Circuit of the Americas - Grand Prix",
+      "Autódromo José Carlos Pace - Grand Prix",
+      "Fuji Speedway - Grand Prix",
+      "Circuit de Spa-Francorchamps - Grand Prix Pits",
+      "Autodromo Nazionale Monza - Grand Prix",
+      "Road America - Full Course",
+      "Watkins Glen International - Boot",
+      "Nürburgring Combined - GP",
+      "Circuit des 24 Heures du Mans - 24 Heures du Mans"
     ]
   },
   GTP: {
     color: 0xf1c40f,
     cars: ["Porsche 963 GTP", "Cadillac V-Series.R GTP", "BMW M Hybrid V8"],
     tracks: [
-      "Daytona International Speedway", "Sebring", "Circuit of the Americas",
-      "Interlagos", "Fuji Speedway", "Spa-Francorchamps", "Monza",
-      "Road America", "Watkins Glen", "Le Mans", "Suzuka"
+      "Daytona International Speedway - Road Course",
+      "Sebring International Raceway - International",
+      "Circuit of the Americas - Grand Prix",
+      "Autódromo José Carlos Pace - Grand Prix",
+      "Fuji Speedway - Grand Prix",
+      "Circuit de Spa-Francorchamps - Grand Prix Pits",
+      "Autodromo Nazionale Monza - Grand Prix",
+      "Road America - Full Course",
+      "Watkins Glen International - Boot",
+      "Circuit des 24 Heures du Mans - 24 Heures du Mans",
+      "Suzuka International Racing Course - Grand Prix"
     ]
   }
 };
