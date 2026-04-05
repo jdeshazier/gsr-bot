@@ -538,10 +538,6 @@ async function fetchDriverStats(user) {
 
   // Get license class from member info (real-time), fall back to chart data
   // memberInfo.licenses can be an object or array depending on API version
-  console.log("[DEBUG SR] memberInfo.licenses type:", typeof memberInfo?.licenses, Array.isArray(memberInfo?.licenses));
-  console.log("[DEBUG SR] memberInfo.licenses:", JSON.stringify(memberInfo?.licenses));
-  console.log("[DEBUG SR] srChartData rawSR:", rawSR);
-
   let sportsCarLicense = null;
   if (Array.isArray(memberInfo?.licenses)) {
     sportsCarLicense = memberInfo.licenses.find(l => l.category_id === 5 || l.category === "sports_car") || null;
@@ -551,15 +547,11 @@ async function fetchDriverStats(user) {
 
   let srClass;
   if (sportsCarLicense) {
-    // group_name is "Class B", "Class A", etc. — extract the letter
     const gn = sportsCarLicense.group_name || "";
     srClass = gn.replace("Class ", "").charAt(0) || "R";
-    // safety_rating is already a decimal (e.g. 2.54), not divided by 100
     currentSR = sportsCarLicense.safety_rating ?? currentSR;
-    console.log("[DEBUG SR] Found license:", gn, "SR:", currentSR, "Class:", srClass);
   } else {
     srClass = rawSR >= 4000 ? "A" : rawSR >= 3000 ? "B" : rawSR >= 2000 ? "C" : rawSR >= 1000 ? "D" : "R";
-    console.log("[DEBUG SR] Fallback from rawSR:", rawSR, "-> Class:", srClass);
   }
 
   // Parse season stats from member_recap
