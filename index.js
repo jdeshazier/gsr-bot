@@ -1431,6 +1431,43 @@ client.on("interactionCreate", async interaction => {
     // Update the embed with new standings
     await postOrUpdateTimeTrial(client);
   }
+
+  if (interaction.commandName === "deletelap") {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return interaction.reply({ content: "❌ Administrators only.", flags: 64 });
+    }
+
+    const tt = loadTimeTrial();
+    if (!tt) return interaction.reply({ content: "❌ No active time trial this month.", flags: 64 });
+
+    const targetUser = interaction.options.getUser("driver");
+    const index      = interaction.options.getInteger("index");
+    const sub        = tt.submissions[targetUser.id];
+
+    if (!sub || sub.times.length === 0) {
+      return interaction.reply({ content: `❌ **${targetUser.displayName || targetUser.username}** has no submissions.`, flags: 64 });
+    }
+
+    if (index) {
+      // Delete a specific submission
+      if (index < 1 || index > sub.times.length) {
+        const list = sub.times.map((t, i) => `  ${i + 1}. **${t.formatted}** — ${new Date(t.date).toLocaleDateString()}`).join("\n");
+        return interaction.reply({ content: `❌ Invalid index. **${sub.name}** has ${sub.times.length} submission(s):\n${list}`, flags: 64 });
+      }
+      const removed = sub.times.splice(index - 1, 1)[0];
+      saveTimeTrial(tt);
+      await postOrUpdateTimeTrial(client);
+      return interaction.reply({ content: `✅ Deleted submission #${index} (**${removed.formatted}**) from **${sub.name}**.`, flags: 64 });
+    } else {
+      // Delete all submissions for this driver
+      const count = sub.times.length;
+      delete tt.submissions[targetUser.id];
+      tt.signups = tt.signups.filter(id => id !== targetUser.id);
+      saveTimeTrial(tt);
+      await postOrUpdateTimeTrial(client);
+      return interaction.reply({ content: `✅ Deleted all **${count}** submission(s) from **${sub.name}**.`, flags: 64 });
+    }
+  }
 });
 
 // ====================== STATS COMMAND ======================
@@ -1528,6 +1565,14 @@ const commands = [
     options: [
       { name: "time",       description: "Your lap time (e.g. 1:32.456)", type: 3, required: true },
       { name: "screenshot", description: "Screenshot proof of your lap time", type: 11, required: true }
+    ]
+  },
+  {
+    name: "deletelap",
+    description: "(Admin) Delete a driver's time trial submission",
+    options: [
+      { name: "driver", description: "The driver to remove submissions for", type: 6, required: true },
+      { name: "index",  description: "Specific submission # to delete (1-5), or leave blank to delete all", type: 4, required: false }
     ]
   }
 ];
