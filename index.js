@@ -8,7 +8,10 @@ const {
   EmbedBuilder,
   AttachmentBuilder,
   PermissionsBitField,
-  ChannelType
+  ChannelType,
+  ButtonBuilder,
+  ButtonStyle,
+  ActionRowBuilder
 } = require("discord.js");
 const express = require("express");
 const fetch = require("node-fetch");
@@ -369,6 +372,423 @@ async function startNewTimeTrial(client) {
   const tt = generateTimeTrial();
   saveTimeTrial(tt);
   await postOrUpdateTimeTrial(client);
+}
+
+// ====================== EVENTS ======================
+const EVENTS_FILE = path.join(DATA_DIR, "events.json");
+
+function loadEvents() {
+  try {
+    if (!fs.existsSync(EVENTS_FILE)) return [];
+    return JSON.parse(fs.readFileSync(EVENTS_FILE, "utf8"));
+  } catch { return []; }
+}
+
+function saveEvents(events) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(EVENTS_FILE, JSON.stringify(events, null, 2), "utf8");
+  } catch (err) {
+    console.error("Error saving events:", err.message);
+  }
+}
+
+// Active DM sessions for event creation/editing. Map<userId, {step, data, mode, eventId}>
+const dmSessions = new Map();
+
+// Preset button labels
+const BUTTON_PRESETS = {
+  standard: ["Accept", "Decline", "Tentative"],
+  class:    ["GT3", "LMP2", "GTP"]
+};
+
+// Parse human-friendly date string → Date or null
+function parseEventDate(input) {
+  if (!input) return null;
+  const trimmed = input.trim();
+  // Try native Date parsing first
+  let d = new Date(trimmed);
+  if (!isNaN(d.getTime())) {
+    // If no year provided, Date() defaults to current year — if that's in the past, bump to next year
+    if (!/\d{4}/.test(trimmed) && d.getTime() < Date.now()) {
+      d.setFullYear(d.getFullYear() + 1);
+    }
+    return d;
+  }
+  return null;
+}
+
+// Generate Google Calendar "Add event" URL
+function buildGoogleCalendarUrl(event) {
+  const fmt = (iso) => new Date(iso).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const end = event.endTime || new Date(new Date(event.startTime).getTime() + 60 * 60 * 1000).toISOString();
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text:   event.title,
+    dates:  `${fmt(event.startTime)}/${fmt(end)}`,
+    details: event.description || ""
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+// Build the event embed
+function buildEventEmbed(event) {
+  const startUnix = Math.floor(new Date(event.startTime).getTime() / 1000);
+  const endUnix   = event.endTime ? Math.floor(new Date(event.endTime).getTime() / 1000) : null;
+
+  const timeField = endUnix
+    ? `<t:${startUnix}:F> — <t:${endUnix}:F>\n<t:${startUnix}:R>`
+    : `<t:${startUnix}:F>\n<t:${startUnix}:R>`;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x2ecc71)
+    .setTitle(`📅 ${event.title}`)
+    .setDescription(event.description || "*No description*")
+    .addFields({ name: "🕐 Time", value: timeField, inline: false });
+
+  // Attendee fields per button
+  for (const label of event.buttonLabels) {
+    const responders = event.responses?.[label] || [];
+    const count      = responders.length;
+    let valueText    = `**${count}**`;
+    if (event.showAttendeeNames !== false && count > 0) {
+      const names = responders.map(r => r.name).slice(0, 20);
+      valueText  += "\n" + names.map(n => `• ${n}`).join("\n");
+      if (count > 20) valueText += `\n*and ${count - 20} more...*`;
+    }
+    embed.addFields({ name: label, value: valueText, inline: true });
+  }
+
+  // Recurring indicator
+  if (event.recurring && event.recurring !== "none") {
+    embed.addFields({ name: "🔁 Recurring", value: event.recurring.charAt(0).toUpperCase() + event.recurring.slice(1), inline: true });
+  }
+
+  embed.setFooter({ text: `Created by ${event.creatorTag} • ID: ${event.id}` });
+  return embed;
+}
+
+// Build action rows of buttons for the event message
+function buildEventButtons(event) {
+  const rows = [];
+  const rsvpRow = new ActionRowBuilder();
+  event.buttonLabels.forEach((label, idx) => {
+    rsvpRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`evt_rsvp_${event.id}_${idx}`)
+        .setLabel(label)
+        .setStyle(ButtonStyle.Primary)
+    );
+  });
+  rows.push(rsvpRow);
+
+  const actionRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`evt_edit_${event.id}`)
+      .setLabel("Edit")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`evt_delete_${event.id}`)
+      .setLabel("Delete")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setLabel("Add to Google")
+      .setStyle(ButtonStyle.Link)
+      .setURL(buildGoogleCalendarUrl(event))
+  );
+  rows.push(actionRow);
+  return rows;
+}
+
+// Post an event to the events forum channel
+async function postEventToForum(client, event) {
+  let channel = client.channels.cache.get(EVENTS_CHANNEL_ID);
+  if (!channel) channel = await client.channels.fetch(EVENTS_CHANNEL_ID);
+  if (!channel) throw new Error("Events channel not found");
+
+  const embed = buildEventEmbed(event);
+  const rows  = buildEventButtons(event);
+  const startStr = new Date(event.startTime).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const threadName = `📅 ${event.title} — ${startStr}`;
+
+  const messagePayload = {
+    content: event.mentionRole === "everyone" ? "@everyone" : undefined,
+    embeds:  [embed],
+    components: rows,
+    allowedMentions: event.mentionRole === "everyone" ? { parse: ["everyone"] } : { parse: [] }
+  };
+
+  if (channel.type === ChannelType.GuildForum) {
+    const thread = await channel.threads.create({
+      name: threadName.slice(0, 100),
+      message: messagePayload
+    });
+    const starter = await thread.fetchStarterMessage();
+    event.threadId  = thread.id;
+    event.messageId = starter.id;
+  } else {
+    const msg = await channel.send(messagePayload);
+    event.threadId  = null;
+    event.messageId = msg.id;
+  }
+}
+
+// Update the event's posted embed + buttons
+async function updateEventPost(client, event) {
+  try {
+    let channel = client.channels.cache.get(EVENTS_CHANNEL_ID);
+    if (!channel) channel = await client.channels.fetch(EVENTS_CHANNEL_ID);
+    if (!channel) return;
+
+    let msg;
+    if (event.threadId) {
+      const thread = await channel.threads.fetch(event.threadId);
+      msg = await thread.messages.fetch(event.messageId);
+    } else {
+      msg = await channel.messages.fetch(event.messageId);
+    }
+    await msg.edit({ embeds: [buildEventEmbed(event)], components: buildEventButtons(event) });
+  } catch (err) {
+    console.error("Error updating event post:", err.message);
+  }
+}
+
+// Archive the event's forum thread
+async function archiveEventPost(client, event) {
+  try {
+    if (!event.threadId) return;
+    let channel = client.channels.cache.get(EVENTS_CHANNEL_ID);
+    if (!channel) channel = await client.channels.fetch(EVENTS_CHANNEL_ID);
+    if (!channel) return;
+    const thread = await channel.threads.fetch(event.threadId);
+    if (thread && !thread.archived) await thread.setArchived(true);
+  } catch (err) {
+    console.error("Error archiving event thread:", err.message);
+  }
+}
+
+// Delete the event's forum thread/message
+async function deleteEventPost(client, event) {
+  try {
+    let channel = client.channels.cache.get(EVENTS_CHANNEL_ID);
+    if (!channel) channel = await client.channels.fetch(EVENTS_CHANNEL_ID);
+    if (!channel) return;
+    if (event.threadId) {
+      const thread = await channel.threads.fetch(event.threadId);
+      if (thread) await thread.delete().catch(() => {});
+    } else if (event.messageId) {
+      const msg = await channel.messages.fetch(event.messageId);
+      if (msg) await msg.delete().catch(() => {});
+    }
+  } catch (err) {
+    console.error("Error deleting event post:", err.message);
+  }
+}
+
+// ====================== DM FLOW ======================
+async function startEventCreationDm(user) {
+  try {
+    const dm = await user.createDM();
+    dmSessions.set(user.id, {
+      mode: "create",
+      step: "title",
+      data: {
+        creatorId: user.id,
+        creatorTag: user.displayName || user.username,
+        responses: {},
+        showAttendeeNames: true
+      }
+    });
+    await dm.send(
+      "📅 **Let's create an event!**\n\n" +
+      "**Step 1 of 8** — What's the event **title**?\n" +
+      "*(Type `cancel` at any time to stop.)*"
+    );
+  } catch (err) {
+    console.error("Error starting event DM:", err.message);
+  }
+}
+
+// Re-used to restart a step after invalid input
+async function promptStep(session, dm) {
+  const s = session.step;
+  if (s === "title")         return dm.send("**Step 1 of 8** — What's the event **title**?");
+  if (s === "description")   return dm.send("**Step 2 of 8** — Enter a **description** (or type `skip`).");
+  if (s === "startTime")     return dm.send("**Step 3 of 8** — When does it **start**? (e.g. `May 2 12:00 AM` or `2026-05-02 19:00`)");
+  if (s === "endTime")       return dm.send("**Step 4 of 8** — When does it **end**? (or type `skip`)");
+  if (s === "buttons")       return dm.send({
+    content: "**Step 5 of 8** — Choose your **signup buttons**:",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("evtdm_btn_standard").setLabel("Standard (Accept/Decline/Tentative)").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_btn_class").setLabel("Class (GT3/LMP2/GTP)").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_btn_custom").setLabel("Custom").setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  });
+  if (s === "customLabels")  return dm.send("**Step 5b** — Type your custom button labels separated by commas (e.g. `Driver, Spotter, Crew Chief`):");
+  if (s === "recurring")     return dm.send({
+    content: "**Step 6 of 8** — Is this a **recurring** event?",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("evtdm_rec_none").setLabel("One-time").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("evtdm_rec_weekly").setLabel("Weekly").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_rec_biweekly").setLabel("Biweekly").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_rec_monthly").setLabel("Monthly").setStyle(ButtonStyle.Primary)
+      )
+    ]
+  });
+  if (s === "reminder")      return dm.send({
+    content: "**Step 7 of 8** — Send a **reminder DM** to accepted drivers?",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("evtdm_rem_30").setLabel("30 min before").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_rem_60").setLabel("1 hour before").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_rem_1440").setLabel("24 hours before").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_rem_none").setLabel("None").setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  });
+  if (s === "mention")       return dm.send({
+    content: "**Step 8 of 8** — **Ping @everyone** when posted?",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("evtdm_men_everyone").setLabel("@everyone").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("evtdm_men_none").setLabel("No ping").setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  });
+}
+
+async function handleDmText(userId, content, dm, client) {
+  const session = dmSessions.get(userId);
+  if (!session) return;
+
+  if (content.toLowerCase() === "cancel") {
+    dmSessions.delete(userId);
+    return dm.send("❌ Event creation cancelled.");
+  }
+
+  const s = session.step;
+  const d = session.data;
+
+  if (s === "title") {
+    if (content.length > 100) return dm.send("⚠️ Title must be 100 characters or less. Try again:");
+    d.title = content;
+    session.step = "description";
+    return promptStep(session, dm);
+  }
+  if (s === "description") {
+    d.description = content.toLowerCase() === "skip" ? "" : content;
+    session.step = "startTime";
+    return promptStep(session, dm);
+  }
+  if (s === "startTime") {
+    const parsed = parseEventDate(content);
+    if (!parsed) return dm.send("⚠️ Couldn't parse that date. Try something like `May 2 12:00 AM` or `2026-05-02 19:00`:");
+    d.startTime = parsed.toISOString();
+    session.step = "endTime";
+    return promptStep(session, dm);
+  }
+  if (s === "endTime") {
+    if (content.toLowerCase() === "skip") {
+      d.endTime = null;
+    } else {
+      const parsed = parseEventDate(content);
+      if (!parsed) return dm.send("⚠️ Couldn't parse that date. Try again or type `skip`:");
+      d.endTime = parsed.toISOString();
+    }
+    session.step = "buttons";
+    return promptStep(session, dm);
+  }
+  if (s === "customLabels") {
+    const labels = content.split(",").map(l => l.trim()).filter(Boolean);
+    if (labels.length < 1 || labels.length > 5) return dm.send("⚠️ Enter between 1 and 5 labels, separated by commas:");
+    d.buttonPreset = "custom";
+    d.buttonLabels = labels;
+    labels.forEach(l => d.responses[l] = []);
+    session.step = "recurring";
+    return promptStep(session, dm);
+  }
+}
+
+async function handleDmButton(interaction, client) {
+  const session = dmSessions.get(interaction.user.id);
+  if (!session) {
+    return interaction.reply({ content: "⚠️ Your session expired. Run `/event` again.", ephemeral: true });
+  }
+  const dm = interaction.channel;
+  const d  = session.data;
+  const id = interaction.customId;
+
+  if (id.startsWith("evtdm_btn_")) {
+    const preset = id.replace("evtdm_btn_", "");
+    if (preset === "custom") {
+      session.step = "customLabels";
+      await interaction.update({ content: "✅ Custom buttons selected.", components: [] });
+      return promptStep(session, dm);
+    }
+    d.buttonPreset = preset;
+    d.buttonLabels = [...BUTTON_PRESETS[preset]];
+    d.buttonLabels.forEach(l => d.responses[l] = []);
+    session.step = "recurring";
+    await interaction.update({ content: `✅ **${preset.charAt(0).toUpperCase() + preset.slice(1)}** buttons selected.`, components: [] });
+    return promptStep(session, dm);
+  }
+  if (id.startsWith("evtdm_rec_")) {
+    const recurring = id.replace("evtdm_rec_", "");
+    d.recurring = recurring === "none" ? null : recurring;
+    session.step = "reminder";
+    await interaction.update({ content: `✅ Recurrence: **${recurring}**`, components: [] });
+    return promptStep(session, dm);
+  }
+  if (id.startsWith("evtdm_rem_")) {
+    const rem = id.replace("evtdm_rem_", "");
+    d.reminderMinutes = rem === "none" ? null : parseInt(rem, 10);
+    session.step = "mention";
+    await interaction.update({ content: `✅ Reminder: **${rem === "none" ? "none" : rem + " minutes before"}**`, components: [] });
+    return promptStep(session, dm);
+  }
+  if (id.startsWith("evtdm_men_")) {
+    d.mentionRole = id.replace("evtdm_men_", "") === "everyone" ? "everyone" : null;
+    await interaction.update({ content: `✅ Mention: **${d.mentionRole || "none"}**`, components: [] });
+
+    // Finalize: build event, save, post
+    const event = {
+      id:            `evt_${Date.now()}`,
+      title:         d.title,
+      description:   d.description,
+      startTime:     d.startTime,
+      endTime:       d.endTime,
+      creatorId:     d.creatorId,
+      creatorTag:    d.creatorTag,
+      buttonPreset:  d.buttonPreset,
+      buttonLabels:  d.buttonLabels,
+      responses:     d.responses,
+      recurring:     d.recurring || null,
+      reminderMinutes: d.reminderMinutes || null,
+      reminderSent:  false,
+      mentionRole:   d.mentionRole || null,
+      showAttendeeNames: true,
+      threadId:      null,
+      messageId:     null,
+      archived:      false,
+      nextRecurrencePosted: false
+    };
+
+    try {
+      await postEventToForum(client, event);
+      const events = loadEvents();
+      events.push(event);
+      saveEvents(events);
+      dmSessions.delete(interaction.user.id);
+      return dm.send(`✅ **Event posted!** Check <#${EVENTS_CHANNEL_ID}>.`);
+    } catch (err) {
+      console.error("Error finalizing event:", err);
+      dmSessions.delete(interaction.user.id);
+      return dm.send(`❌ Failed to post event: ${err.message}`);
+    }
+  }
 }
 
 // ====================== HELPERS ======================
@@ -1242,9 +1662,12 @@ app.listen(PORT, () => console.log(`🌐 OAuth server running on port ${PORT}`))
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessageReactions
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent
   ],
-  partials: [Partials.Message, Partials.Reaction]
+  partials: [Partials.Message, Partials.Reaction, Partials.Channel]
 });
 
 client.once("clientReady", async () => {
@@ -1272,6 +1695,119 @@ client.once("clientReady", async () => {
 });
 
 client.on("interactionCreate", async interaction => {
+  // Button interactions
+  if (interaction.isButton()) {
+    try {
+      const id = interaction.customId;
+
+      // DM creation flow buttons
+      if (id.startsWith("evtdm_")) {
+        return handleDmButton(interaction, client);
+      }
+
+      // RSVP on an event
+      if (id.startsWith("evt_rsvp_")) {
+        const parts = id.split("_"); // evt_rsvp_<eventId>_<idx>
+        const idx   = parseInt(parts[parts.length - 1], 10);
+        const eventId = parts.slice(2, -1).join("_");
+        const events = loadEvents();
+        const event  = events.find(e => e.id === eventId);
+        if (!event) return interaction.reply({ content: "⚠️ Event not found.", flags: 64 });
+
+        const label = event.buttonLabels[idx];
+        if (!label) return interaction.reply({ content: "⚠️ Button not found.", flags: 64 });
+
+        const userEntry = { userId: interaction.user.id, name: interaction.user.displayName || interaction.user.username };
+
+        // Remove from all other responses first
+        let wasInThis = false;
+        for (const key of Object.keys(event.responses || {})) {
+          const arr = event.responses[key] || [];
+          const existing = arr.findIndex(r => r.userId === interaction.user.id);
+          if (existing >= 0) {
+            if (key === label) wasInThis = true;
+            arr.splice(existing, 1);
+            event.responses[key] = arr;
+          }
+        }
+
+        let replyMsg;
+        if (wasInThis) {
+          replyMsg = `✅ Removed your **${label}** signup.`;
+        } else {
+          if (!event.responses[label]) event.responses[label] = [];
+          event.responses[label].push(userEntry);
+          replyMsg = `✅ You signed up as **${label}**.`;
+        }
+
+        saveEvents(events);
+        await updateEventPost(client, event);
+        return interaction.reply({ content: replyMsg, flags: 64 });
+      }
+
+      // Edit event
+      if (id.startsWith("evt_edit_")) {
+        const eventId = id.replace("evt_edit_", "");
+        const events  = loadEvents();
+        const event   = events.find(e => e.id === eventId);
+        if (!event) return interaction.reply({ content: "⚠️ Event not found.", flags: 64 });
+        const isCreator = interaction.user.id === event.creatorId;
+        const isAdmin   = interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator);
+        if (!isCreator && !isAdmin) return interaction.reply({ content: "❌ Only the creator or an admin can edit this event.", flags: 64 });
+
+        // For now, point at delete-and-recreate workflow (simple edit would double the complexity)
+        return interaction.reply({
+          content: "✏️ To edit this event, please delete it and create a new one with `/event`. (Full edit coming soon!)",
+          flags: 64
+        });
+      }
+
+      // Delete event (with confirm)
+      if (id.startsWith("evt_delete_") && !id.startsWith("evt_delete_confirm_") && !id.startsWith("evt_delete_cancel_")) {
+        const eventId = id.replace("evt_delete_", "");
+        const events  = loadEvents();
+        const event   = events.find(e => e.id === eventId);
+        if (!event) return interaction.reply({ content: "⚠️ Event not found.", flags: 64 });
+        const isCreator = interaction.user.id === event.creatorId;
+        const isAdmin   = interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator);
+        if (!isCreator && !isAdmin) return interaction.reply({ content: "❌ Only the creator or an admin can delete this event.", flags: 64 });
+
+        return interaction.reply({
+          content: `⚠️ Delete **${event.title}**? This cannot be undone.`,
+          flags: 64,
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId(`evt_delete_confirm_${event.id}`).setLabel("Yes, delete").setStyle(ButtonStyle.Danger),
+              new ButtonBuilder().setCustomId(`evt_delete_cancel_${event.id}`).setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+            )
+          ]
+        });
+      }
+
+      if (id.startsWith("evt_delete_confirm_")) {
+        const eventId = id.replace("evt_delete_confirm_", "");
+        let events    = loadEvents();
+        const event   = events.find(e => e.id === eventId);
+        if (!event) return interaction.update({ content: "⚠️ Event not found.", components: [] });
+
+        await deleteEventPost(client, event);
+        events = events.filter(e => e.id !== eventId);
+        saveEvents(events);
+        return interaction.update({ content: `✅ Deleted **${event.title}**.`, components: [] });
+      }
+
+      if (id.startsWith("evt_delete_cancel_")) {
+        return interaction.update({ content: "Cancelled.", components: [] });
+      }
+    } catch (err) {
+      console.error("Button handler error:", err);
+      if (!interaction.replied && !interaction.deferred) {
+        try { await interaction.reply({ content: "❌ Something went wrong.", flags: 64 }); } catch {}
+      }
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "ping") {
@@ -1468,6 +2004,71 @@ client.on("interactionCreate", async interaction => {
       return interaction.reply({ content: `✅ Deleted all **${count}** submission(s) from **${sub.name}**.`, flags: 64 });
     }
   }
+
+  // ====================== EVENT COMMANDS ======================
+  if (interaction.commandName === "event") {
+    await interaction.reply({ content: "📬 Check your DMs to set up your event!", flags: 64 });
+    return startEventCreationDm(interaction.user);
+  }
+
+  if (interaction.commandName === "response") {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return interaction.reply({ content: "❌ Administrators only.", flags: 64 });
+    }
+    const sub   = interaction.options.getSubcommand();
+    const title = interaction.options.getString("event_title").trim().toLowerCase();
+    const user  = interaction.options.getUser("user");
+    const label = interaction.options.getString("label");
+
+    const events = loadEvents();
+    const matches = events.filter(e => !e.archived && e.title.toLowerCase().includes(title));
+    if (matches.length === 0) return interaction.reply({ content: `❌ No active event found matching **"${title}"**.`, flags: 64 });
+    if (matches.length > 1) {
+      const names = matches.map(e => `• ${e.title}`).join("\n");
+      return interaction.reply({ content: `⚠️ Multiple matches — be more specific:\n${names}`, flags: 64 });
+    }
+    const event = matches[0];
+    if (!event.buttonLabels.includes(label)) {
+      return interaction.reply({ content: `❌ Label **${label}** not found on this event. Valid: ${event.buttonLabels.join(", ")}`, flags: 64 });
+    }
+    if (!event.responses[label]) event.responses[label] = [];
+
+    if (sub === "add") {
+      if (event.responses[label].find(r => r.userId === user.id)) {
+        return interaction.reply({ content: `ℹ️ ${user.username} is already in **${label}**.`, flags: 64 });
+      }
+      // Remove from any other label first
+      for (const k of Object.keys(event.responses)) {
+        event.responses[k] = event.responses[k].filter(r => r.userId !== user.id);
+      }
+      event.responses[label].push({ userId: user.id, name: user.displayName || user.username });
+      saveEvents(events);
+      await updateEventPost(client, event);
+      return interaction.reply({ content: `✅ Added ${user.username} to **${label}** on **${event.title}**.`, flags: 64 });
+    }
+    if (sub === "remove") {
+      const before = event.responses[label].length;
+      event.responses[label] = event.responses[label].filter(r => r.userId !== user.id);
+      if (event.responses[label].length === before) {
+        return interaction.reply({ content: `ℹ️ ${user.username} was not in **${label}**.`, flags: 64 });
+      }
+      saveEvents(events);
+      await updateEventPost(client, event);
+      return interaction.reply({ content: `✅ Removed ${user.username} from **${label}** on **${event.title}**.`, flags: 64 });
+    }
+  }
+});
+
+// DM text handler for event creation flow
+client.on("messageCreate", async message => {
+  try {
+    if (message.author.bot) return;
+    if (message.channel.type !== ChannelType.DM) return;
+    if (!dmSessions.has(message.author.id)) return;
+    await handleDmText(message.author.id, message.content, message.channel, client);
+  } catch (err) {
+    console.error("DM message handler error:", err.message);
+  }
 });
 
 // ====================== STATS COMMAND ======================
@@ -1574,6 +2175,32 @@ const commands = [
       { name: "driver", description: "The driver to remove submissions for", type: 6, required: true },
       { name: "index",  description: "Specific submission # to delete (1-5), or leave blank to delete all", type: 4, required: false }
     ]
+  },
+  {
+    name: "event",
+    description: "Create a new event (guided setup via DM)"
+  },
+  {
+    name: "response",
+    description: "(Admin) Manage event attendees",
+    options: [
+      {
+        name: "add", description: "Add a user to an event response", type: 1,
+        options: [
+          { name: "event_title", description: "Event title (partial match)", type: 3, required: true },
+          { name: "user",        description: "User to add",                  type: 6, required: true },
+          { name: "label",       description: "Response label (e.g. Accept, GT3)", type: 3, required: true }
+        ]
+      },
+      {
+        name: "remove", description: "Remove a user from an event response", type: 1,
+        options: [
+          { name: "event_title", description: "Event title (partial match)", type: 3, required: true },
+          { name: "user",        description: "User to remove",              type: 6, required: true },
+          { name: "label",       description: "Response label",              type: 3, required: true }
+        ]
+      }
+    ]
   }
 ];
 
@@ -1631,4 +2258,87 @@ new CronJob("0 9 1 * *", async () => {
 new CronJob("0 8 * * *", async () => {
   await postOrUpdateTimeTrial(client);
   console.log("Time trial embed updated.");
+}, null, true, "America/Chicago");
+
+// Events: every 5 minutes — send reminders to accepted drivers
+new CronJob("*/5 * * * *", async () => {
+  try {
+    const events = loadEvents();
+    const now    = Date.now();
+    let changed  = false;
+    for (const ev of events) {
+      if (ev.archived || ev.reminderSent) continue;
+      if (!ev.reminderMinutes) continue;
+      const startMs = new Date(ev.startTime).getTime();
+      const fireAt  = startMs - ev.reminderMinutes * 60 * 1000;
+      if (now >= fireAt && now < startMs) {
+        // DM all users in "Accept" / "Accepted" or the first button label
+        const targetLabel = ev.buttonLabels.find(l => /^accept/i.test(l)) || ev.buttonLabels[0];
+        const recipients  = ev.responses?.[targetLabel] || [];
+        for (const r of recipients) {
+          try {
+            const user = await client.users.fetch(r.userId);
+            const startUnix = Math.floor(startMs / 1000);
+            await user.send(`⏰ **Reminder:** *${ev.title}* starts <t:${startUnix}:R>!`);
+          } catch (err) {
+            console.error(`Could not DM reminder to ${r.userId}:`, err.message);
+          }
+        }
+        ev.reminderSent = true;
+        changed = true;
+        console.log(`Sent reminders for event: ${ev.title}`);
+      }
+    }
+    if (changed) saveEvents(events);
+  } catch (err) {
+    console.error("Event reminder cron error:", err.message);
+  }
+}, null, true, "America/Chicago");
+
+// Events: every 10 minutes — auto-archive past events and post recurring next instance
+new CronJob("*/10 * * * *", async () => {
+  try {
+    const events = loadEvents();
+    const now    = Date.now();
+    let changed  = false;
+    for (const ev of events) {
+      if (ev.archived) continue;
+      const endMs = new Date(ev.endTime || ev.startTime).getTime();
+      // Grace period: 30 min after end before archiving
+      if (now < endMs + 30 * 60 * 1000) continue;
+
+      // Post recurring next instance
+      if (ev.recurring && !ev.nextRecurrencePosted) {
+        try {
+          const next = JSON.parse(JSON.stringify(ev));
+          next.id = `evt_${Date.now()}`;
+          const intervalDays = ev.recurring === "weekly" ? 7 : ev.recurring === "biweekly" ? 14 : 30;
+          next.startTime = new Date(new Date(ev.startTime).getTime() + intervalDays * 24 * 3600 * 1000).toISOString();
+          if (ev.endTime) next.endTime = new Date(new Date(ev.endTime).getTime() + intervalDays * 24 * 3600 * 1000).toISOString();
+          // Reset state
+          next.responses = {};
+          ev.buttonLabels.forEach(l => next.responses[l] = []);
+          next.reminderSent = false;
+          next.archived = false;
+          next.nextRecurrencePosted = false;
+          next.threadId  = null;
+          next.messageId = null;
+          await postEventToForum(client, next);
+          events.push(next);
+          ev.nextRecurrencePosted = true;
+          console.log(`Posted recurring next instance of: ${ev.title}`);
+        } catch (err) {
+          console.error("Error posting recurring next event:", err.message);
+        }
+      }
+
+      await archiveEventPost(client, ev);
+      ev.archived = true;
+      changed = true;
+      console.log(`Archived past event: ${ev.title}`);
+    }
+    if (changed) saveEvents(events);
+  } catch (err) {
+    console.error("Event archive cron error:", err.message);
+  }
 }, null, true, "America/Chicago");
