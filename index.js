@@ -1666,9 +1666,10 @@ app.get("/oauth/callback", async (req, res) => {
       accessToken:  tokenData.access_token,
       refreshToken: tokenData.refresh_token,
       expiresAt:    Date.now() + tokenData.expires_in * 1000,
-      lastIRating:  existing?.lastIRating,
-      lastChange:   existing?.lastChange,
-      lastRank:     existing?.lastRank,
+      lastIRating:     existing?.lastIRating,
+      baselineIRating: existing?.baselineIRating ?? existing?.lastIRating,
+      lastChange:      existing?.lastChange,
+      lastRank:        existing?.lastRank,
     });
     saveLinkedDrivers(drivers);
     res.send(`✅ Linked as <b>${iracingName}</b>!<br><br>You can now close this window.`);
@@ -2140,9 +2141,10 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
       try {
         const ir = await getCurrentIRating(driver);
         if (ir !== null) {
-          const old          = driver.lastIRating ?? ir;
           driver.lastIRating = ir;
-          driver.lastChange  = ir - old;
+          // Weekly change = current iRating minus the Sunday baseline
+          const baseline = driver.baselineIRating ?? ir;
+          driver.lastChange = ir - baseline;
           anyUpdated = true;
         } else {
           console.log(`Could not fetch iRating for ${driver.iracingName || driver.discordId}, using cached: ${driver.lastIRating ?? "none"}`);
@@ -2155,10 +2157,18 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
     drivers.sort((a, b) => (b.lastIRating ?? 0) - (a.lastIRating ?? 0));
     drivers.forEach((d, i) => d.lastRank = i + 1);
 
-    // Always save updated iRatings so they're fresh for next load
+    // Snapshot the baseline only on the weekly Sunday cron
+    if (saveBaseline) {
+      for (const d of drivers) {
+        d.baselineIRating = d.lastIRating ?? 0;
+        d.lastChange = 0; // reset change for the new week
+      }
+      console.log("Weekly baseline saved.");
+    }
+
+    // Always persist fresh iRatings
     if (anyUpdated || saveBaseline) {
       saveLinkedDrivers(drivers);
-      if (saveBaseline) console.log("Weekly baseline saved.");
     }
 
     const displayed    = drivers.slice(0, 20);
