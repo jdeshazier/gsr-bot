@@ -833,21 +833,44 @@ async function getValidAccessToken(user) {
 
 async function getCurrentIRating(user) {
   try {
-    const token   = await getValidAccessToken(user);
+    const token = await getValidAccessToken(user);
+
+    // Primary: chart_data endpoint (historical data points)
     const rootRes = await fetch(
       "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5",
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!rootRes.ok) return null;
-    const rootJson = await rootRes.json();
-    if (!rootJson.link) return null;
-    const chartRes  = await fetch(rootJson.link);
-    if (!chartRes.ok) return null;
-    const chartJson = await chartRes.json();
-    if (chartJson.data?.length > 0) {
-      return chartJson.data[chartJson.data.length - 1].value;
+    if (rootRes.ok) {
+      const rootJson = await rootRes.json();
+      if (rootJson.link) {
+        const chartRes = await fetch(rootJson.link);
+        if (chartRes.ok) {
+          const chartJson = await chartRes.json();
+          if (chartJson.data?.length > 0) {
+            return chartJson.data[chartJson.data.length - 1].value;
+          }
+        }
+      }
     }
-  } catch (e) {}
+    console.log(`chart_data failed for ${user.iracingName}, trying member/info fallback`);
+
+    // Fallback: member/info endpoint (has iRating in license objects)
+    const infoData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/member/info");
+    if (infoData) {
+      let sportsLic = null;
+      if (Array.isArray(infoData.licenses)) {
+        sportsLic = infoData.licenses.find(l => l.category_id === 5 || l.category === "sports_car");
+      } else if (infoData.licenses) {
+        sportsLic = infoData.licenses.sports_car;
+      }
+      if (sportsLic?.irating) {
+        console.log(`Got iRating from member/info fallback for ${user.iracingName}: ${sportsLic.irating}`);
+        return sportsLic.irating;
+      }
+    }
+  } catch (e) {
+    console.error(`getCurrentIRating error for ${user.iracingName || user.discordId}:`, e.message);
+  }
   return null;
 }
 
@@ -2082,6 +2105,13 @@ async function showStats(interaction) {
     // Fetch Discord avatar; automatically falls back to GSR logo if none set
     const avatarB64   = await getAvatarBase64(interaction.user);
     const stats       = await fetchDriverStats(driver);
+
+    // Persist the fresh iRating from the stats fetch
+    if (stats.currentIR > 0 && stats.currentIR !== driver.lastIRating) {
+      driver.lastIRating = stats.currentIR;
+      saveLinkedDrivers(drivers);
+    }
+
     const imageBuffer = await renderStatsCard(stats, avatarB64);
     await interaction.editReply({ files: [new AttachmentBuilder(imageBuffer, { name: "stats.png" })] });
   } catch (err) {
@@ -2105,6 +2135,7 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
 
     if (isInteraction) await interactionOrChannel.deferReply();
 
+    let anyUpdated = false;
     for (const driver of drivers) {
       try {
         const ir = await getCurrentIRating(driver);
@@ -2112,16 +2143,22 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
           const old          = driver.lastIRating ?? ir;
           driver.lastIRating = ir;
           driver.lastChange  = ir - old;
+          anyUpdated = true;
+        } else {
+          console.log(`Could not fetch iRating for ${driver.iracingName || driver.discordId}, using cached: ${driver.lastIRating ?? "none"}`);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error(`Leaderboard fetch error for ${driver.iracingName}:`, e.message);
+      }
     }
 
     drivers.sort((a, b) => (b.lastIRating ?? 0) - (a.lastIRating ?? 0));
     drivers.forEach((d, i) => d.lastRank = i + 1);
 
-    if (saveBaseline) {
+    // Always save updated iRatings so they're fresh for next load
+    if (anyUpdated || saveBaseline) {
       saveLinkedDrivers(drivers);
-      console.log("Weekly baseline saved.");
+      if (saveBaseline) console.log("Weekly baseline saved.");
     }
 
     const displayed    = drivers.slice(0, 20);
