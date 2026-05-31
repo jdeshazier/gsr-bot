@@ -831,11 +831,78 @@ async function getValidAccessToken(user) {
   return user.accessToken;
 }
 
+// Try each driver's token in order until one works — returns { token, ownerName }
+async function getBestAvailableToken(drivers) {
+  for (const driver of drivers) {
+    try {
+      const token = await getValidAccessToken(driver);
+      if (token) {
+        driver.tokenFailed = false;
+        return { token, ownerName: driver.iracingName };
+      }
+    } catch (e) {
+      console.warn(`Token invalid for ${driver.iracingName}: ${e.message}`);
+      driver.tokenFailed = true;
+    }
+  }
+  return null;
+}
+
+// Fetch iRating for a specific cust_id using any valid token.
+// Uses chart_data (most accurate) with a cust_id override, falls back to member/profile.
+async function getIRatingByCustId(custId, token, driverName) {
+  try {
+    // chart_data with cust_id — works for any member when you're authenticated
+    const chartRes = await fetch(
+      `https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5&cust_id=${custId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (chartRes.ok) {
+      const chartJson = await chartRes.json();
+      const link = chartJson.link;
+      if (link) {
+        const dataRes = await fetch(link);
+        if (dataRes.ok) {
+          const data = await dataRes.json();
+          if (data?.data?.length > 0) {
+            return data.data[data.data.length - 1].value;
+          }
+        }
+      }
+    }
+    console.log(`chart_data failed for cust_id=${custId} (${driverName}), trying member_summary fallback`);
+
+    // Fallback: member_summary supports cust_id and includes current licenses/irating
+    const summaryData = await fetchIRacingData(
+      token,
+      `https://members-ng.iracing.com/data/member/profile?cust_id=${custId}`
+    );
+    if (summaryData) {
+      const member = summaryData.member ?? summaryData;
+      const licenses = member.licenses ?? member.member?.licenses;
+      let sportsLic = null;
+      if (Array.isArray(licenses)) {
+        sportsLic = licenses.find(l => l.category_id === 5 || l.category === "sports_car");
+      } else if (licenses) {
+        sportsLic = licenses.sports_car;
+      }
+      if (sportsLic?.irating) {
+        console.log(`Got iRating from profile fallback for ${driverName}: ${sportsLic.irating}`);
+        return sportsLic.irating;
+      }
+    }
+  } catch (e) {
+    console.error(`getIRatingByCustId error for ${driverName} (cust_id=${custId}):`, e.message);
+  }
+  return null;
+}
+
+// Legacy per-user fetch (used for /stats, /myirating, and as a last resort)
 async function getCurrentIRating(user) {
   try {
     const token = await getValidAccessToken(user);
 
-    // Primary: chart_data endpoint (historical data points)
+    // chart_data for own account
     const rootRes = await fetch(
       "https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5",
       { headers: { Authorization: `Bearer ${token}` } }
@@ -854,7 +921,7 @@ async function getCurrentIRating(user) {
     }
     console.log(`chart_data failed for ${user.iracingName}, trying member/info fallback`);
 
-    // Fallback: member/info endpoint (has iRating in license objects)
+    // Fallback: member/info
     const infoData = await fetchIRacingData(token, "https://members-ng.iracing.com/data/member/info");
     if (infoData) {
       let sportsLic = null;
@@ -863,13 +930,11 @@ async function getCurrentIRating(user) {
       } else if (infoData.licenses) {
         sportsLic = infoData.licenses.sports_car;
       }
-      if (sportsLic?.irating) {
-        console.log(`Got iRating from member/info fallback for ${user.iracingName}: ${sportsLic.irating}`);
-        return sportsLic.irating;
-      }
+      if (sportsLic?.irating) return sportsLic.irating;
     }
   } catch (e) {
     console.error(`getCurrentIRating error for ${user.iracingName || user.discordId}:`, e.message);
+    user.tokenFailed = true;
   }
   return null;
 }
@@ -2136,21 +2201,57 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
 
     if (isInteraction) await interactionOrChannel.deferReply();
 
+    // Get the best available token from the pool — one valid token can serve all drivers
+    const tokenResult = await getBestAvailableToken(drivers);
+    if (!tokenResult) {
+      console.error("Leaderboard: no valid tokens available — all drivers may need to re-link.");
+    } else {
+      console.log(`Leaderboard: using token from ${tokenResult.ownerName} for all ${drivers.length} drivers`);
+    }
+
     let anyUpdated = false;
+    const staleDrivers = []; // drivers whose own token failed
     for (const driver of drivers) {
       try {
-        const ir = await getCurrentIRating(driver);
+        let ir = null;
+
+        if (tokenResult && driver.customerId) {
+          // Preferred: use any valid token + cust_id (not affected by individual token expiry)
+          ir = await getIRatingByCustId(driver.customerId, tokenResult.token, driver.iracingName);
+        }
+
+        if (ir === null) {
+          // Last resort: try the driver's own token
+          ir = await getCurrentIRating(driver);
+        }
+
         if (ir !== null) {
           driver.lastIRating = ir;
-          // Weekly change = current iRating minus the Sunday baseline
+          driver.tokenFailed = false;
+          // Weekly change = current iRating vs Sunday baseline
           const baseline = driver.baselineIRating ?? ir;
           driver.lastChange = ir - baseline;
           anyUpdated = true;
+          console.log(`  ✓ ${driver.iracingName}: ${ir} (Δ${driver.lastChange >= 0 ? "+" : ""}${driver.lastChange})`);
         } else {
-          console.log(`Could not fetch iRating for ${driver.iracingName || driver.discordId}, using cached: ${driver.lastIRating ?? "none"}`);
+          console.log(`  ✗ ${driver.iracingName}: could not fetch iRating, showing cached ${driver.lastIRating ?? "none"}`);
+          if (driver.tokenFailed) staleDrivers.push(driver);
         }
       } catch (e) {
         console.error(`Leaderboard fetch error for ${driver.iracingName}:`, e.message);
+      }
+    }
+
+    // DM drivers whose token has permanently failed so they know to re-link
+    for (const driver of staleDrivers) {
+      try {
+        const discordUser = await client.users.fetch(driver.discordId);
+        await discordUser.send(
+          `⚠️ **GSR Bot — Action Required**\n\nYour iRacing account link has expired and the leaderboard can no longer update your iRating.\n\nPlease run \`/link\` in the GSR Discord to re-connect your account. This only takes a few seconds!`
+        );
+        console.log(`Sent re-link DM to ${driver.iracingName}`);
+      } catch (dmErr) {
+        console.warn(`Could not DM ${driver.iracingName} about expired token: ${dmErr.message}`);
       }
     }
 
@@ -2166,8 +2267,8 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
       console.log("Weekly baseline saved.");
     }
 
-    // Always persist fresh iRatings
-    if (anyUpdated || saveBaseline) {
+    // Always persist fresh iRatings and token health flags
+    if (anyUpdated || saveBaseline || staleDrivers.length > 0) {
       saveLinkedDrivers(drivers);
     }
 
