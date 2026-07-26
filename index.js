@@ -11,7 +11,10 @@ const {
   ChannelType,
   ButtonBuilder,
   ButtonStyle,
-  ActionRowBuilder
+  ActionRowBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } = require("discord.js");
 const express = require("express");
 const fetch = require("node-fetch");
@@ -32,8 +35,11 @@ const {
   ANNOUNCE_CHANNEL_ID
 } = process.env;
 
-const NEWS_CHANNEL_ID     = "1410663955759759410";
-const EVENTS_CHANNEL_ID   = "1485670245632053430";
+const NEWS_CHANNEL_ID               = "1410663955759759410";
+const EVENTS_CHANNEL_ID             = "1485670245632053430";
+const EVENT_RESERVATIONS_CHANNEL_ID = "1530353732129394779";
+const EVENT_REQUEST_CHANNEL_ID      = "1531076519504510997";
+const TEAM_MANAGER_ROLE_ID          = "1383407150486917131";
 
 if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !IRACING_CLIENT_ID ||
     !IRACING_CLIENT_SECRET || !IRACING_REDIRECT_URI || !ANNOUNCE_CHANNEL_ID) {
@@ -788,6 +794,393 @@ async function handleDmButton(interaction, client) {
       dmSessions.delete(interaction.user.id);
       return dm.send(`❌ Failed to post event: ${err.message}`);
     }
+  }
+}
+
+// ====================== RESERVATIONS ======================
+const TEAM_CARS = {
+  GTP:  ["060", "090"],
+  LMP2: ["131", "192"],
+  GT3:  ["210", "240", "241"]
+};
+const ALL_TEAM_CARS = [].concat(...Object.values(TEAM_CARS));
+
+const RESERVATIONS_FILE = path.join(DATA_DIR, "reservations.json");
+
+function loadReservations() {
+  try {
+    if (!fs.existsSync(RESERVATIONS_FILE)) return [];
+    return JSON.parse(fs.readFileSync(RESERVATIONS_FILE, "utf8"));
+  } catch { return []; }
+}
+
+function saveReservations(reservations) {
+  try {
+    fs.writeFileSync(RESERVATIONS_FILE, JSON.stringify(reservations, null, 2), "utf8");
+  } catch (err) {
+    console.error("Error saving reservations:", err.message);
+  }
+}
+
+function getCarClass(carNum) {
+  for (const [cls, cars] of Object.entries(TEAM_CARS)) {
+    if (cars.includes(carNum)) return cls;
+  }
+  return null;
+}
+
+function getAvailableTeamCars(date, timeslot, excludeId = null) {
+  const reservations = loadReservations();
+  const taken = new Set(
+    reservations
+      .filter(r =>
+        r.date === date &&
+        r.timeslot.toLowerCase() === timeslot.toLowerCase() &&
+        ["pending", "approved"].includes(r.status) &&
+        r.id !== excludeId
+      )
+      .map(r => r.teamCar)
+  );
+  return ALL_TEAM_CARS.filter(c => !taken.has(c));
+}
+
+// Active DM sessions for reservation flow. Separate from event dmSessions.
+const resDmSessions = new Map();
+
+async function promptResStep(session, dm) {
+  const step = session.step;
+  const d    = session.data;
+  const TOTAL = 10;
+  const NUM   = { series: 1, track: 2, date: 3, startTime: 4, timeslot: 5,
+                  carClass: 6, carRunning: 7, teamCar: 8, teammates: 9, notes: 10 };
+  const n = NUM[step] ?? "?";
+
+  if (step === "series") {
+    return dm.send(`**Step ${n}/${TOTAL} — Series Name**\nWhat series is this race in? *(e.g. IMSA GT3 Challenge)*`);
+  }
+  if (step === "track") {
+    return dm.send(`**Step ${n}/${TOTAL} — Track**\nWhat track is the race at?`);
+  }
+  if (step === "date") {
+    return dm.send(`**Step ${n}/${TOTAL} — Date**\nWhat date is the race? *(e.g. 08/02/2026)*`);
+  }
+  if (step === "startTime") {
+    return dm.send(`**Step ${n}/${TOTAL} — Start Time**\nWhat time does it start **in your local time**? *(e.g. 3:00 PM CDT)*`);
+  }
+  if (step === "timeslot") {
+    return dm.send(`**Step ${n}/${TOTAL} — Timeslot**\nWhat timeslot is that? *(e.g. Timeslot 2)*`);
+  }
+  if (step === "carClass") {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("resdm_class_GTP").setLabel("GTP").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("resdm_class_LMP2").setLabel("LMP2").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("resdm_class_GT3").setLabel("GT3").setStyle(ButtonStyle.Primary)
+    );
+    return dm.send({ content: `**Step ${n}/${TOTAL} — Car Class**\nWhat car class are you racing in?`, components: [row] });
+  }
+  if (step === "carRunning") {
+    return dm.send(`**Step ${n}/${TOTAL} — Your Car**\nWhat car are you personally running? *(e.g. Porsche 963 GTP)*`);
+  }
+  if (step === "teamCar") {
+    const available = getAvailableTeamCars(d.date, d.timeslot);
+    if (available.length === 0) {
+      resDmSessions.delete(d.submitterId);
+      return dm.send("❌ All team cars are already reserved for that date and timeslot. Please choose a different timeslot and run `/reserve` again.");
+    }
+    const rows = [];
+    let row = new ActionRowBuilder();
+    available.forEach((car, i) => {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`resdm_car_${car}`)
+          .setLabel(`#${car} (${getCarClass(car)})`)
+          .setStyle(ButtonStyle.Secondary)
+      );
+      if ((i + 1) % 5 === 0) { rows.push(row); row = new ActionRowBuilder(); }
+    });
+    if (row.components.length > 0) rows.push(row);
+    return dm.send({ content: `**Step ${n}/${TOTAL} — Team Car**\nWhich team car do you want to reserve?\n*(Available for ${d.date} — ${d.timeslot})*`, components: rows });
+  }
+  if (step === "teammates") {
+    return dm.send(`**Step ${n}/${TOTAL} — Teammates**\nList all teammates by first name and last initial, separated by commas.\n*(e.g. John D., Mike R.)* — Type \`none\` if racing solo.`);
+  }
+  if (step === "notes") {
+    return dm.send(`**Step ${n}/${TOTAL} — Notes for Manager**\nAnything the manager should know? Type your note or \`skip\` to skip.`);
+  }
+}
+
+async function showResConfirmation(session, dm) {
+  const d   = session.data;
+  const cls = getCarClass(d.teamCar);
+  const mismatch = cls !== d.carClass;
+  const drivers  = [d.submitterName, ...d.teammates].join(", ");
+
+  let summary = `📋 **Reservation Summary — Please confirm:**\n\n`;
+  summary += `**Series:** ${d.series}\n`;
+  summary += `**Track:** ${d.track}\n`;
+  summary += `**Date:** ${d.date}\n`;
+  summary += `**Start Time:** ${d.startTime} | ${d.timeslot}\n`;
+  summary += `**Car Class (racing in):** ${d.carClass}\n`;
+  summary += `**Car Running:** ${d.carRunning}\n`;
+  summary += `**Team Car:** #${d.teamCar} (${cls})\n`;
+  summary += `**Drivers:** ${drivers}\n`;
+  summary += `**Notes:** ${d.notes || "None"}\n`;
+  if (mismatch) {
+    summary += `\n⚠️ **Class mismatch:** You selected **${d.carClass}** class but chose a **${cls}** team car. The manager will be notified.`;
+  }
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("resdm_confirm").setLabel("Submit Request").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("resdm_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger)
+  );
+  return dm.send({ content: summary, components: [row] });
+}
+
+async function handleResDmText(userId, content, dm) {
+  const session = resDmSessions.get(userId);
+  if (!session) return;
+
+  // Edit-timeslot mode (started from clicking Edit button in #event-reservations)
+  if (session.mode === "editTimeslot") {
+    if (session.step === "startTime") {
+      session.data.newStartTime = content;
+      session.step = "timeslot";
+      return dm.send("What timeslot is that? *(e.g. Timeslot 2)*");
+    }
+    if (session.step === "timeslot") {
+      const newTimeslot = content;
+      const reservations = loadReservations();
+      const idx = reservations.findIndex(r => r.id === session.resId);
+      if (idx === -1) { resDmSessions.delete(userId); return dm.send("❌ Reservation not found."); }
+
+      const available = getAvailableTeamCars(reservations[idx].date, newTimeslot, session.resId);
+      if (!available.includes(reservations[idx].teamCar)) {
+        resDmSessions.delete(userId);
+        return dm.send(`❌ Team car **#${reservations[idx].teamCar}** is already reserved for **${reservations[idx].date} — ${newTimeslot}**. Please cancel and resubmit with a different timeslot.`);
+      }
+
+      const oldTimeslot = reservations[idx].timeslot;
+      reservations[idx].startTime = session.data.newStartTime;
+      reservations[idx].timeslot  = newTimeslot;
+      saveReservations(reservations);
+      resDmSessions.delete(userId);
+
+      // Edit the #event-reservations post
+      try {
+        const evtCh = await client.channels.fetch(EVENT_RESERVATIONS_CHANNEL_ID);
+        const msg   = await evtCh.messages.fetch(reservations[idx].eventReservationsMessageId);
+        await msg.edit({ embeds: [buildReservationEmbed(reservations[idx])], components: msg.components });
+      } catch (e) { console.error("Failed to edit reservation post on timeslot edit:", e.message); }
+
+      // Notify #event-request
+      try {
+        const reqCh = await client.channels.fetch(EVENT_REQUEST_CHANNEL_ID);
+        await reqCh.send({
+          embeds: [new EmbedBuilder()
+            .setColor(0xf39c12)
+            .setTitle("📝 Reservation Updated — Timeslot Change")
+            .setDescription(`**${reservations[idx].submitterName}** changed their timeslot for **${reservations[idx].series}** at ${reservations[idx].track}.`)
+            .addFields(
+              { name: "Team Car",       value: `#${reservations[idx].teamCar}`, inline: true },
+              { name: "Old Timeslot",   value: oldTimeslot,                     inline: true },
+              { name: "New Start Time", value: `${session.data.newStartTime} | ${newTimeslot}`, inline: true }
+            )
+          ]
+        });
+      } catch (e) { console.error("Failed to notify event-request of timeslot edit:", e.message); }
+
+      return dm.send("✅ Timeslot updated! The reservation post has been edited.");
+    }
+    return;
+  }
+
+  // Normal creation flow
+  if (content.toLowerCase() === "cancel") {
+    resDmSessions.delete(userId);
+    return dm.send("❌ Reservation cancelled.");
+  }
+
+  const s = session.step;
+  const d = session.data;
+
+  if (s === "series")    { d.series = content;   session.step = "track";    return promptResStep(session, dm); }
+  if (s === "track")     { d.track = content;    session.step = "date";     return promptResStep(session, dm); }
+  if (s === "date")      { d.date = content;     session.step = "startTime"; return promptResStep(session, dm); }
+  if (s === "startTime") { d.startTime = content; session.step = "timeslot"; return promptResStep(session, dm); }
+  if (s === "timeslot")  { d.timeslot = content; session.step = "carClass"; return promptResStep(session, dm); }
+  // carClass and teamCar handled by buttons
+  if (s === "carRunning") { d.carRunning = content; session.step = "teamCar"; return promptResStep(session, dm); }
+  if (s === "teammates") {
+    d.teammates = content.toLowerCase() === "none"
+      ? []
+      : content.split(",").map(t => t.trim()).filter(Boolean);
+    session.step = "notes";
+    return promptResStep(session, dm);
+  }
+  if (s === "notes") {
+    d.notes = content.toLowerCase() === "skip" ? "" : content;
+    return showResConfirmation(session, dm);
+  }
+}
+
+async function handleResDmButton(interaction) {
+  const id      = interaction.customId;
+  const userId  = interaction.user.id;
+  const session = resDmSessions.get(userId);
+
+  if (id === "resdm_cancel") {
+    resDmSessions.delete(userId);
+    return interaction.update({ content: "❌ Reservation cancelled.", components: [] });
+  }
+
+  if (id === "resdm_confirm") {
+    if (!session) return interaction.reply({ content: "⚠️ Session expired. Run `/reserve` again.", ephemeral: true });
+    const d   = session.data;
+    const cls = getCarClass(d.teamCar);
+
+    const res = {
+      id:                         `res_${Date.now()}`,
+      submitterId:                d.submitterId,
+      submitterName:              d.submitterName,
+      series:                     d.series,
+      track:                      d.track,
+      date:                       d.date,
+      startTime:                  d.startTime,
+      timeslot:                   d.timeslot,
+      carClass:                   d.carClass,
+      carRunning:                 d.carRunning,
+      teamCar:                    d.teamCar,
+      teamCarClass:               cls,
+      classMismatch:              cls !== d.carClass,
+      teammates:                  d.teammates,
+      notes:                      d.notes,
+      status:                     "pending",
+      managerReason:              null,
+      eventReservationsMessageId: null,
+      eventRequestMessageId:      null,
+      submittedAt:                Date.now(),
+      reviewedAt:                 null,
+      reviewedBy:                 null
+    };
+
+    const reservations = loadReservations();
+    reservations.push(res);
+    saveReservations(reservations);
+    resDmSessions.delete(userId);
+
+    await interaction.update({ content: "✅ Submitting your reservation...", components: [] });
+    try {
+      await postReservationRequest(res);
+      await interaction.channel.send("✅ **Reservation submitted!** A Team Manager will review it shortly.");
+    } catch (err) {
+      console.error("Error posting reservation request:", err);
+      await interaction.channel.send("❌ Failed to submit. Please try again with `/reserve`.");
+    }
+    return;
+  }
+
+  if (id.startsWith("resdm_class_")) {
+    if (!session) return interaction.reply({ content: "⚠️ Session expired.", ephemeral: true });
+    session.data.carClass = id.replace("resdm_class_", "");
+    session.step = "carRunning";
+    await interaction.update({ content: `✅ Class: **${session.data.carClass}**`, components: [] });
+    return promptResStep(session, interaction.channel);
+  }
+
+  if (id.startsWith("resdm_car_")) {
+    if (!session) return interaction.reply({ content: "⚠️ Session expired.", ephemeral: true });
+    const carNum  = id.replace("resdm_car_", "");
+    const cls     = getCarClass(carNum);
+    const mismatch = cls !== session.data.carClass;
+    session.data.teamCar = carNum;
+    session.step = "teammates";
+    await interaction.update({
+      content: `✅ Team car: **#${carNum} (${cls})**` +
+        (mismatch ? `\n⚠️ You selected **${session.data.carClass}** class but chose a **${cls}** car. The manager will be notified.` : ""),
+      components: []
+    });
+    return promptResStep(session, interaction.channel);
+  }
+}
+
+function buildReservationEmbed(res) {
+  const cls     = res.teamCarClass || getCarClass(res.teamCar) || "?";
+  const drivers = [res.submitterName, ...(res.teammates || [])].join(", ");
+  const cancelled = res.status === "cancelled";
+
+  return new EmbedBuilder()
+    .setColor(cancelled ? 0x95a5a6 : 0x2ecc71)
+    .setTitle(cancelled ? `~~🏁 ${res.series}~~ — CANCELLED` : `🏁 ${res.series}`)
+    .addFields(
+      { name: "📅 Date",        value: res.date,                          inline: true },
+      { name: "🗺️ Track",       value: res.track,                         inline: true },
+      { name: "​",         value: "​",                          inline: true },
+      { name: "🕐 Start Time",  value: `${res.startTime} | ${res.timeslot}`, inline: false },
+      { name: "🚗 Team Car",    value: `#${res.teamCar} (${cls})`,        inline: true },
+      { name: "🏎️ Car Running", value: res.carRunning,                    inline: true },
+      { name: "👤 Drivers",     value: drivers,                           inline: false },
+      ...(res.notes ? [{ name: "📝 Notes", value: res.notes, inline: false }] : [])
+    )
+    .setFooter({ text: `ID: ${res.id} • ${res.status.toUpperCase()}` });
+}
+
+function buildManagerRequestEmbed(res, overrideStatus) {
+  const cls     = res.teamCarClass || getCarClass(res.teamCar) || "?";
+  const drivers = [res.submitterName, ...(res.teammates || [])].join(", ");
+  const status  = overrideStatus || res.status;
+
+  const titleMap = { pending: "🆕 New Reservation Request", approved: "✅ Reservation Approved", denied: "❌ Reservation Denied", cancelled: "🚫 Reservation Cancelled" };
+  const colorMap = { pending: 0xe67e22, approved: 0x2ecc71, denied: 0xe74c3c, cancelled: 0x95a5a6 };
+
+  const embed = new EmbedBuilder()
+    .setColor(colorMap[status] ?? 0xe67e22)
+    .setTitle(titleMap[status] ?? "Reservation")
+    .addFields(
+      { name: "Submitted by", value: `<@${res.submitterId}>`, inline: true },
+      { name: "Series",       value: res.series,              inline: true },
+      { name: "​",       value: "​",                inline: true },
+      { name: "Track",        value: res.track,               inline: true },
+      { name: "Date",         value: res.date,                inline: true },
+      { name: "Start Time",   value: `${res.startTime} | ${res.timeslot}`, inline: true },
+      { name: "Team Car",     value: `#${res.teamCar} (${cls})`,           inline: true },
+      { name: "Car Running",  value: res.carRunning,                       inline: true },
+      { name: "Drivers",      value: drivers,                              inline: false },
+      ...(res.notes ? [{ name: "Notes", value: res.notes, inline: false }] : []),
+      ...(res.classMismatch ? [{ name: "⚠️ Class Mismatch", value: `Driver selected **${res.carClass}** class but reserved a **${cls}** team car.`, inline: false }] : []),
+      ...(res.managerReason ? [{ name: "Reason", value: res.managerReason, inline: false }] : [])
+    )
+    .setFooter({ text: `Reservation ID: ${res.id}` });
+
+  return embed;
+}
+
+async function postReservationRequest(res) {
+  const channel = await client.channels.fetch(EVENT_REQUEST_CHANNEL_ID);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`res_approve_${res.id}`).setLabel("Approve").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`res_deny_${res.id}`).setLabel("Deny").setStyle(ButtonStyle.Danger)
+  );
+  const msg = await channel.send({ embeds: [buildManagerRequestEmbed(res)], components: [row] });
+
+  const reservations = loadReservations();
+  const idx = reservations.findIndex(r => r.id === res.id);
+  if (idx !== -1) { reservations[idx].eventRequestMessageId = msg.id; saveReservations(reservations); }
+}
+
+async function postApprovedReservation(res) {
+  const channel = await client.channels.fetch(EVENT_RESERVATIONS_CHANNEL_ID);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`res_edit_${res.id}`).setLabel("Edit Timeslot").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`res_cancel_${res.id}`).setLabel("Cancel Reservation").setStyle(ButtonStyle.Danger)
+  );
+  const msg = await channel.send({ embeds: [buildReservationEmbed(res)], components: [row] });
+
+  const reservations = loadReservations();
+  const idx = reservations.findIndex(r => r.id === res.id);
+  if (idx !== -1) {
+    reservations[idx].eventReservationsMessageId = msg.id;
+    reservations[idx].status = "approved";
+    saveReservations(reservations);
   }
 }
 
@@ -1789,7 +2182,137 @@ client.on("interactionCreate", async interaction => {
     try {
       const id = interaction.customId;
 
-      // DM creation flow buttons
+      // Reservation DM flow buttons
+      if (id.startsWith("resdm_")) {
+        return handleResDmButton(interaction);
+      }
+
+      // Reservation manager/driver action buttons
+      if (id.startsWith("res_")) {
+        // Approve
+        if (id.startsWith("res_approve_")) {
+          const resId  = id.replace("res_approve_", "");
+          const member = await interaction.guild.members.fetch(interaction.user.id);
+          if (!member.roles.cache.has(TEAM_MANAGER_ROLE_ID)) {
+            return interaction.reply({ content: "❌ Only Team Managers can approve requests.", flags: 64 });
+          }
+          const reservations = loadReservations();
+          const idx = reservations.findIndex(r => r.id === resId);
+          if (idx === -1) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
+
+          reservations[idx].reviewedAt = Date.now();
+          reservations[idx].reviewedBy = interaction.user.id;
+          saveReservations(reservations);
+
+          await postApprovedReservation(reservations[idx]);
+          await interaction.update({ embeds: [buildManagerRequestEmbed(reservations[idx], "approved")], components: [] });
+
+          try {
+            const driver = await client.users.fetch(reservations[idx].submitterId);
+            await driver.send(`✅ **Reservation Approved!**\nYour reservation for **${reservations[idx].series}** at **${reservations[idx].track}** (Team Car **#${reservations[idx].teamCar}**) has been approved by a Team Manager.\n\nCheck <#${EVENT_RESERVATIONS_CHANNEL_ID}> for your confirmed reservation.`);
+          } catch (e) { console.error("Failed to DM driver approval:", e.message); }
+          return;
+        }
+
+        // Deny — open modal for reason
+        if (id.startsWith("res_deny_") && !id.includes("modal")) {
+          const member = await interaction.guild.members.fetch(interaction.user.id);
+          if (!member.roles.cache.has(TEAM_MANAGER_ROLE_ID)) {
+            return interaction.reply({ content: "❌ Only Team Managers can deny requests.", flags: 64 });
+          }
+          const resId = id.replace("res_deny_", "");
+          const modal = new ModalBuilder()
+            .setCustomId(`res_deny_modal_${resId}`)
+            .setTitle("Deny Reservation");
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId("deny_reason")
+                .setLabel("Reason for denial")
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true)
+                .setMaxLength(500)
+            )
+          );
+          return interaction.showModal(modal);
+        }
+
+        // Cancel — confirm prompt
+        if (id.startsWith("res_cancel_") && !id.includes("confirm") && !id.includes("abort")) {
+          const resId = id.replace("res_cancel_", "");
+          const reservations = loadReservations();
+          const res = reservations.find(r => r.id === resId);
+          if (!res) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
+
+          const member    = await interaction.guild.members.fetch(interaction.user.id);
+          const isManager = member.roles.cache.has(TEAM_MANAGER_ROLE_ID);
+          if (interaction.user.id !== res.submitterId && !isManager) {
+            return interaction.reply({ content: "❌ Only the submitter or a Team Manager can cancel this reservation.", flags: 64 });
+          }
+
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`res_cancel_confirm_${resId}`).setLabel("Yes, Cancel It").setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`res_cancel_abort_${resId}`).setLabel("Keep It").setStyle(ButtonStyle.Secondary)
+          );
+          return interaction.reply({ content: `⚠️ Cancel reservation for **${res.series}** at **${res.track}** (Team Car #${res.teamCar})?`, components: [row], flags: 64 });
+        }
+
+        if (id.startsWith("res_cancel_confirm_")) {
+          const resId        = id.replace("res_cancel_confirm_", "");
+          const reservations = loadReservations();
+          const idx          = reservations.findIndex(r => r.id === resId);
+          if (idx === -1) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
+
+          reservations[idx].status = "cancelled";
+          saveReservations(reservations);
+
+          // Edit #event-reservations to show CANCELLED
+          try {
+            const evtCh = await client.channels.fetch(EVENT_RESERVATIONS_CHANNEL_ID);
+            const msg   = await evtCh.messages.fetch(reservations[idx].eventReservationsMessageId);
+            await msg.edit({ embeds: [buildReservationEmbed(reservations[idx])], components: [] });
+          } catch (e) { console.error("Failed to mark reservation cancelled:", e.message); }
+
+          // Notify #event-request
+          try {
+            const reqCh = await client.channels.fetch(EVENT_REQUEST_CHANNEL_ID);
+            await reqCh.send({ embeds: [buildManagerRequestEmbed(reservations[idx], "cancelled")] });
+          } catch (e) { console.error("Failed to notify event-request of cancellation:", e.message); }
+
+          return interaction.update({ content: "✅ Reservation cancelled.", components: [] });
+        }
+
+        if (id.startsWith("res_cancel_abort_")) {
+          return interaction.update({ content: "Kept — no changes made.", components: [] });
+        }
+
+        // Edit timeslot — open DM flow
+        if (id.startsWith("res_edit_")) {
+          const resId        = id.replace("res_edit_", "");
+          const reservations = loadReservations();
+          const res          = reservations.find(r => r.id === resId);
+          if (!res) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
+
+          const member    = await interaction.guild.members.fetch(interaction.user.id);
+          const isManager = member.roles.cache.has(TEAM_MANAGER_ROLE_ID);
+          if (interaction.user.id !== res.submitterId && !isManager) {
+            return interaction.reply({ content: "❌ Only the submitter or a Team Manager can edit this reservation.", flags: 64 });
+          }
+          try {
+            const user = await client.users.fetch(interaction.user.id);
+            const dm   = await user.createDM();
+            resDmSessions.set(interaction.user.id, { mode: "editTimeslot", resId: res.id, step: "startTime", data: {} });
+            await dm.send(`📝 **Edit Timeslot — ${res.series} at ${res.track}**\nWhat is the new start time **in your local time**? *(e.g. 4:00 PM CDT)*`);
+            return interaction.reply({ content: "📬 Check your DMs to update the timeslot.", flags: 64 });
+          } catch (e) {
+            return interaction.reply({ content: "❌ Couldn't open a DM. Make sure your DMs are open.", flags: 64 });
+          }
+        }
+
+        return;
+      }
+
+      // Event DM creation flow buttons
       if (id.startsWith("evtdm_")) {
         return handleDmButton(interaction, client);
       }
@@ -1895,6 +2418,33 @@ client.on("interactionCreate", async interaction => {
       }
     }
     return;
+  }
+
+  // Modal submit — deny reason
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId.startsWith("res_deny_modal_")) {
+      const resId        = interaction.customId.replace("res_deny_modal_", "");
+      const reason       = interaction.fields.getTextInputValue("deny_reason");
+      const reservations = loadReservations();
+      const idx          = reservations.findIndex(r => r.id === resId);
+      if (idx === -1) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
+
+      reservations[idx].status        = "denied";
+      reservations[idx].managerReason = reason;
+      reservations[idx].reviewedAt    = Date.now();
+      reservations[idx].reviewedBy    = interaction.user.id;
+      saveReservations(reservations);
+
+      await interaction.update({ embeds: [buildManagerRequestEmbed(reservations[idx], "denied")], components: [] });
+
+      try {
+        const driver = await client.users.fetch(reservations[idx].submitterId);
+        await driver.send(
+          `❌ **Reservation Denied**\nYour reservation for **${reservations[idx].series}** at **${reservations[idx].track}** (Team Car **#${reservations[idx].teamCar}**) was denied by a Team Manager.\n\n**Reason:** ${reason}\n\nFeel free to submit a new request with \`/reserve\` or reach out to a Team Manager with any questions.`
+        );
+      } catch (e) { console.error("Failed to DM driver denial:", e.message); }
+      return;
+    }
   }
 
   if (!interaction.isChatInputCommand()) return;
@@ -2094,6 +2644,35 @@ client.on("interactionCreate", async interaction => {
     }
   }
 
+  // ====================== RESERVATION COMMAND ======================
+  if (interaction.commandName === "reserve") {
+    try {
+      const dm = await interaction.user.createDM();
+      const linkedDrivers = loadLinkedDrivers();
+      const linked        = linkedDrivers.find(d => d.discordId === interaction.user.id);
+      const submitterName = linked?.iracingName || interaction.user.displayName || interaction.user.username;
+
+      resDmSessions.set(interaction.user.id, {
+        step: "series",
+        mode: "create",
+        data: {
+          submitterId:   interaction.user.id,
+          submitterName,
+          series: "", track: "", date: "", startTime: "", timeslot: "",
+          carClass: "", carRunning: "", teamCar: "",
+          teammates: [], notes: ""
+        }
+      });
+
+      await dm.send("👋 **GSR Team Car Reservation**\nLet's set up your race reservation step by step.\nType `cancel` at any time to stop.\n​");
+      await promptResStep(resDmSessions.get(interaction.user.id), dm);
+      return interaction.reply({ content: "📬 Check your DMs to get started!", flags: 64 });
+    } catch (err) {
+      console.error("Failed to start reservation DM:", err);
+      return interaction.reply({ content: "❌ Couldn't open a DM. Please make sure your DMs are open.", flags: 64 });
+    }
+  }
+
   // ====================== EVENT COMMANDS ======================
   if (interaction.commandName === "event") {
     await interaction.reply({ content: "📬 Check your DMs to set up your event!", flags: 64 });
@@ -2148,13 +2727,16 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-// DM text handler for event creation flow
+// DM text handler — covers both event creation and reservation flows
 client.on("messageCreate", async message => {
   try {
     if (message.author.bot) return;
     if (message.channel.type !== ChannelType.DM) return;
-    if (!dmSessions.has(message.author.id)) return;
-    await handleDmText(message.author.id, message.content, message.channel, client);
+    if (dmSessions.has(message.author.id)) {
+      await handleDmText(message.author.id, message.content, message.channel, client);
+    } else if (resDmSessions.has(message.author.id)) {
+      await handleResDmText(message.author.id, message.content, message.channel);
+    }
   } catch (err) {
     console.error("DM message handler error:", err.message);
   }
@@ -2323,6 +2905,10 @@ const commands = [
       { name: "driver", description: "The driver to remove submissions for", type: 6, required: true },
       { name: "index",  description: "Specific submission # to delete (1-5), or leave blank to delete all", type: 4, required: false }
     ]
+  },
+  {
+    name: "reserve",
+    description: "Request a team car for an official race (guided setup via DM)"
   },
   {
     name: "event",
