@@ -847,6 +847,33 @@ function getAvailableTeamCars(date, timeslot, excludeId = null) {
 // Active DM sessions for reservation flow. Separate from event dmSessions.
 const resDmSessions = new Map();
 
+// Step order for "back" navigation
+const RES_STEP_BACK = {
+  track: "series", date: "track", startTime: "date", timeslot: "startTime",
+  carClass: "timeslot", carRunning: "carClass", teamCar: "carRunning",
+  teammates: "teamCar", notes: "teammates"
+};
+
+// Parse "MM/DD/YY H:MM AM/PM TZ" into a Unix timestamp (seconds), or null
+function parseReservationDateTime(date, startTime) {
+  const TZ_OFFSETS = { EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7 };
+  let offsetHours = 0;
+  let timeStr = startTime.trim();
+  const tzMatch = timeStr.match(/\b(EST|EDT|CST|CDT|MST|MDT|PST|PDT)\b/i);
+  if (tzMatch) { offsetHours = TZ_OFFSETS[tzMatch[1].toUpperCase()] ?? 0; timeStr = timeStr.replace(tzMatch[0], "").trim(); }
+
+  // Accept MM/DD/YY or MM/DD/YYYY
+  const dateParts = date.trim().split("/");
+  if (dateParts.length !== 3) return null;
+  let [mm, dd, yy] = dateParts;
+  const year = yy.length === 2 ? 2000 + parseInt(yy, 10) : parseInt(yy, 10);
+  const combined = `${year}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")} ${timeStr}`;
+  const d = new Date(combined);
+  if (isNaN(d.getTime())) return null;
+  // Shift from driver's local timezone to UTC
+  return Math.floor((d.getTime() - offsetHours * 3600000) / 1000);
+}
+
 async function promptResStep(session, dm) {
   const step = session.step;
   const d    = session.data;
@@ -855,31 +882,34 @@ async function promptResStep(session, dm) {
                   carClass: 6, carRunning: 7, teamCar: 8, teammates: 9, notes: 10 };
   const n = NUM[step] ?? "?";
 
+  const backHint = n > 1 ? " *(type `back` to go back)*" : "";
+
   if (step === "series") {
-    return dm.send(`**Step ${n}/${TOTAL} — Series Name**\nWhat series is this race in? *(e.g. IMSA GT3 Challenge)*`);
+    return dm.send(`**Step ${n}/${TOTAL} — Series Name**\nWhat series is this race in? *(e.g. IMSA GT3 Challenge)*\n*Type \`cancel\` at any time to stop.*`);
   }
   if (step === "track") {
-    return dm.send(`**Step ${n}/${TOTAL} — Track**\nWhat track is the race at?`);
+    return dm.send(`**Step ${n}/${TOTAL} — Track**\nWhat track is the race at?${backHint}`);
   }
   if (step === "date") {
-    return dm.send(`**Step ${n}/${TOTAL} — Date**\nWhat date is the race? *(e.g. 08/02/2026)*`);
+    return dm.send(`**Step ${n}/${TOTAL} — Date**\nWhat date is the race? *(MM/DD/YY — e.g. 08/02/26)*${backHint}`);
   }
   if (step === "startTime") {
-    return dm.send(`**Step ${n}/${TOTAL} — Start Time**\nWhat time does it start **in your local time**? *(e.g. 3:00 PM CDT)*`);
+    return dm.send(`**Step ${n}/${TOTAL} — Start Time**\nWhat time does it start **in your local time**? *(e.g. 3:00 PM CDT)*${backHint}`);
   }
   if (step === "timeslot") {
-    return dm.send(`**Step ${n}/${TOTAL} — Timeslot**\nWhat timeslot is that? *(e.g. Timeslot 2)*`);
+    return dm.send(`**Step ${n}/${TOTAL} — Timeslot**\nWhat timeslot is that? *(e.g. Timeslot 2)*${backHint}`);
   }
   if (step === "carClass") {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("resdm_class_GTP").setLabel("GTP").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("resdm_class_LMP2").setLabel("LMP2").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("resdm_class_GT3").setLabel("GT3").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId("resdm_class_GT3").setLabel("GT3").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("resdm_back").setLabel("← Back").setStyle(ButtonStyle.Secondary)
     );
     return dm.send({ content: `**Step ${n}/${TOTAL} — Car Class**\nWhat car class are you racing in?`, components: [row] });
   }
   if (step === "carRunning") {
-    return dm.send(`**Step ${n}/${TOTAL} — Your Car**\nWhat car are you personally running? *(e.g. Porsche 963 GTP)*`);
+    return dm.send(`**Step ${n}/${TOTAL} — Car Running**\nWhat car are y'all running? *(e.g. Porsche 963 GTP)*${backHint}`);
   }
   if (step === "teamCar") {
     const available = getAvailableTeamCars(d.date, d.timeslot);
@@ -889,23 +919,23 @@ async function promptResStep(session, dm) {
     }
     const rows = [];
     let row = new ActionRowBuilder();
-    available.forEach((car, i) => {
-      row.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`resdm_car_${car}`)
-          .setLabel(`#${car} (${getCarClass(car)})`)
-          .setStyle(ButtonStyle.Secondary)
-      );
-      if ((i + 1) % 5 === 0) { rows.push(row); row = new ActionRowBuilder(); }
+    const allButtons = [
+      ...available.map(car =>
+        new ButtonBuilder().setCustomId(`resdm_car_${car}`).setLabel(`#${car} (${getCarClass(car)})`).setStyle(ButtonStyle.Secondary)
+      ),
+      new ButtonBuilder().setCustomId("resdm_back").setLabel("← Back").setStyle(ButtonStyle.Secondary)
+    ];
+    allButtons.forEach((btn, i) => {
+      row.addComponents(btn);
+      if ((i + 1) % 5 === 0 || i === allButtons.length - 1) { rows.push(row); row = new ActionRowBuilder(); }
     });
-    if (row.components.length > 0) rows.push(row);
     return dm.send({ content: `**Step ${n}/${TOTAL} — Team Car**\nWhich team car do you want to reserve?\n*(Available for ${d.date} — ${d.timeslot})*`, components: rows });
   }
   if (step === "teammates") {
-    return dm.send(`**Step ${n}/${TOTAL} — Teammates**\nList all teammates by first name and last initial, separated by commas.\n*(e.g. John D., Mike R.)* — Type \`none\` if racing solo.`);
+    return dm.send(`**Step ${n}/${TOTAL} — Teammates**\nList all teammates by first name and last initial, separated by commas.\n*(e.g. John D., Mike R.)* — Type \`none\` if racing solo.${backHint}`);
   }
   if (step === "notes") {
-    return dm.send(`**Step ${n}/${TOTAL} — Notes for Manager**\nAnything the manager should know? Type your note or \`skip\` to skip.`);
+    return dm.send(`**Step ${n}/${TOTAL} — Notes for Manager**\nAnything the manager should know? Type your note or \`skip\` to skip.${backHint}`);
   }
 }
 
@@ -995,7 +1025,9 @@ async function handleResDmText(userId, content, dm) {
   }
 
   // Normal creation flow
-  if (content.toLowerCase() === "cancel") {
+  const lower = content.toLowerCase().trim();
+
+  if (lower === "cancel") {
     resDmSessions.delete(userId);
     return dm.send("❌ Reservation cancelled.");
   }
@@ -1003,22 +1035,38 @@ async function handleResDmText(userId, content, dm) {
   const s = session.step;
   const d = session.data;
 
-  if (s === "series")    { d.series = content;   session.step = "track";    return promptResStep(session, dm); }
-  if (s === "track")     { d.track = content;    session.step = "date";     return promptResStep(session, dm); }
-  if (s === "date")      { d.date = content;     session.step = "startTime"; return promptResStep(session, dm); }
-  if (s === "startTime") { d.startTime = content; session.step = "timeslot"; return promptResStep(session, dm); }
-  if (s === "timeslot")  { d.timeslot = content; session.step = "carClass"; return promptResStep(session, dm); }
+  // Back navigation for text steps
+  if (lower === "back" && RES_STEP_BACK[s]) {
+    session.step = RES_STEP_BACK[s];
+    return promptResStep(session, dm);
+  }
+
+  if (s === "series")    { d.series = content;    session.step = "track";     return promptResStep(session, dm); }
+  if (s === "track")     { d.track = content;     session.step = "date";      return promptResStep(session, dm); }
+  if (s === "date")      { d.date = content;      session.step = "startTime"; return promptResStep(session, dm); }
+  if (s === "startTime") {
+    d.startTime = content;
+    session.step = "timeslot";
+    return promptResStep(session, dm);
+  }
+  if (s === "timeslot") {
+    d.timeslot = content;
+    // Compute Unix timestamp now that we have both date and startTime
+    d.startTimeUnix = parseReservationDateTime(d.date, d.startTime) ?? null;
+    session.step = "carClass";
+    return promptResStep(session, dm);
+  }
   // carClass and teamCar handled by buttons
   if (s === "carRunning") { d.carRunning = content; session.step = "teamCar"; return promptResStep(session, dm); }
   if (s === "teammates") {
-    d.teammates = content.toLowerCase() === "none"
+    d.teammates = lower === "none"
       ? []
       : content.split(",").map(t => t.trim()).filter(Boolean);
     session.step = "notes";
     return promptResStep(session, dm);
   }
   if (s === "notes") {
-    d.notes = content.toLowerCase() === "skip" ? "" : content;
+    d.notes = lower === "skip" ? "" : content;
     return showResConfirmation(session, dm);
   }
 }
@@ -1031,6 +1079,15 @@ async function handleResDmButton(interaction) {
   if (id === "resdm_cancel") {
     resDmSessions.delete(userId);
     return interaction.update({ content: "❌ Reservation cancelled.", components: [] });
+  }
+
+  if (id === "resdm_back") {
+    if (!session) return interaction.update({ content: "⚠️ Session expired.", components: [] });
+    const prevStep = RES_STEP_BACK[session.step];
+    if (!prevStep) return interaction.update({ content: "Already at the first step.", components: [] });
+    session.step = prevStep;
+    await interaction.update({ content: "↩️ Going back…", components: [] });
+    return promptResStep(session, interaction.channel);
   }
 
   if (id === "resdm_confirm") {
@@ -1054,6 +1111,7 @@ async function handleResDmButton(interaction) {
       classMismatch:              cls !== d.carClass,
       teammates:                  d.teammates,
       notes:                      d.notes,
+      startTimeUnix:              d.startTimeUnix ?? null,
       status:                     "pending",
       managerReason:              null,
       eventReservationsMessageId: null,
@@ -1104,22 +1162,24 @@ async function handleResDmButton(interaction) {
 }
 
 function buildReservationEmbed(res) {
-  const cls     = res.teamCarClass || getCarClass(res.teamCar) || "?";
-  const drivers = [res.submitterName, ...(res.teammates || [])].join(", ");
+  const cls      = res.teamCarClass || getCarClass(res.teamCar) || "?";
+  const drivers  = [res.submitterName, ...(res.teammates || [])].join(", ");
   const cancelled = res.status === "cancelled";
+  const timeValue = res.startTimeUnix
+    ? `<t:${res.startTimeUnix}:F> | ${res.timeslot}`
+    : `${res.startTime} | ${res.timeslot}`;
 
   return new EmbedBuilder()
     .setColor(cancelled ? 0x95a5a6 : 0x2ecc71)
     .setTitle(cancelled ? `~~🏁 ${res.series}~~ — CANCELLED` : `🏁 ${res.series}`)
     .addFields(
-      { name: "📅 Date",        value: res.date,                          inline: true },
-      { name: "🗺️ Track",       value: res.track,                         inline: true },
-      { name: "​",         value: "​",                          inline: true },
-      { name: "🕐 Start Time",  value: `${res.startTime} | ${res.timeslot}`, inline: false },
-      { name: "🚗 Team Car",    value: `#${res.teamCar} (${cls})`,        inline: true },
-      { name: "🏎️ Car Running", value: res.carRunning,                    inline: true },
-      { name: "👤 Drivers",     value: drivers,                           inline: false },
-      ...(res.notes ? [{ name: "📝 Notes", value: res.notes, inline: false }] : [])
+      { name: "📅 Date",        value: res.date,            inline: true },
+      { name: "🗺️ Track",       value: res.track,           inline: true },
+      { name: "​",         value: "​",          inline: true },
+      { name: "🕐 Start Time",  value: timeValue,           inline: false },
+      { name: "🚗 Team Car",    value: `#${res.teamCar} (${cls})`, inline: true },
+      { name: "🏎️ Car Running", value: res.carRunning,      inline: true },
+      { name: "👤 Drivers",     value: drivers,             inline: false }
     )
     .setFooter({ text: `ID: ${res.id} • ${res.status.toUpperCase()}` });
 }
@@ -1168,12 +1228,9 @@ async function postReservationRequest(res) {
 }
 
 async function postApprovedReservation(res) {
+  // Public post — no buttons so other drivers can't interact with it
   const channel = await client.channels.fetch(EVENT_RESERVATIONS_CHANNEL_ID);
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`res_edit_${res.id}`).setLabel("Edit Timeslot").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`res_cancel_${res.id}`).setLabel("Cancel Reservation").setStyle(ButtonStyle.Danger)
-  );
-  const msg = await channel.send({ embeds: [buildReservationEmbed(res)], components: [row] });
+  const msg = await channel.send({ embeds: [buildReservationEmbed(res)] });
 
   const reservations = loadReservations();
   const idx = reservations.findIndex(r => r.id === res.id);
@@ -1182,6 +1239,19 @@ async function postApprovedReservation(res) {
     reservations[idx].status = "approved";
     saveReservations(reservations);
   }
+
+  // DM the submitter private manage buttons
+  try {
+    const submitter = await client.users.fetch(res.submitterId);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`res_edit_${res.id}`).setLabel("Edit Timeslot").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`res_cancel_${res.id}`).setLabel("Cancel Reservation").setStyle(ButtonStyle.Danger)
+    );
+    await submitter.send({
+      content: `✅ **Your reservation for ${res.series} at ${res.track} has been approved!**\nUse the buttons below to manage it if needed.`,
+      components: [row]
+    });
+  } catch (e) { console.error("Failed to DM submitter manage buttons:", e.message); }
 }
 
 // ====================== HELPERS ======================
@@ -2190,28 +2260,28 @@ client.on("interactionCreate", async interaction => {
       // Reservation manager/driver action buttons
       if (id.startsWith("res_")) {
         // Approve
-        if (id.startsWith("res_approve_")) {
+        // Approve — open modal so TM can add optional notes
+        if (id.startsWith("res_approve_") && !id.includes("modal")) {
           const resId  = id.replace("res_approve_", "");
           const member = await interaction.guild.members.fetch(interaction.user.id);
           if (!member.roles.cache.has(TEAM_MANAGER_ROLE_ID)) {
             return interaction.reply({ content: "❌ Only Team Managers can approve requests.", flags: 64 });
           }
-          const reservations = loadReservations();
-          const idx = reservations.findIndex(r => r.id === resId);
-          if (idx === -1) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
-
-          reservations[idx].reviewedAt = Date.now();
-          reservations[idx].reviewedBy = interaction.user.id;
-          saveReservations(reservations);
-
-          await postApprovedReservation(reservations[idx]);
-          await interaction.update({ embeds: [buildManagerRequestEmbed(reservations[idx], "approved")], components: [] });
-
-          try {
-            const driver = await client.users.fetch(reservations[idx].submitterId);
-            await driver.send(`✅ **Reservation Approved!**\nYour reservation for **${reservations[idx].series}** at **${reservations[idx].track}** (Team Car **#${reservations[idx].teamCar}**) has been approved by a Team Manager.\n\nCheck <#${EVENT_RESERVATIONS_CHANNEL_ID}> for your confirmed reservation.`);
-          } catch (e) { console.error("Failed to DM driver approval:", e.message); }
-          return;
+          const modal = new ModalBuilder()
+            .setCustomId(`res_approve_modal_${resId}`)
+            .setTitle("Approve Reservation");
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId("approve_notes")
+                .setLabel("Notes for driver (optional)")
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(false)
+                .setMaxLength(500)
+                .setPlaceholder("Leave blank to send no additional notes")
+            )
+          );
+          return interaction.showModal(modal);
         }
 
         // Deny — open modal for reason
@@ -2244,8 +2314,12 @@ client.on("interactionCreate", async interaction => {
           const res = reservations.find(r => r.id === resId);
           if (!res) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
 
-          const member    = await interaction.guild.members.fetch(interaction.user.id);
-          const isManager = member.roles.cache.has(TEAM_MANAGER_ROLE_ID);
+          // Allow from DM (submitter only) or guild (submitter or manager)
+          let isManager = false;
+          if (interaction.guild) {
+            const member = await interaction.guild.members.fetch(interaction.user.id);
+            isManager = member.roles.cache.has(TEAM_MANAGER_ROLE_ID);
+          }
           if (interaction.user.id !== res.submitterId && !isManager) {
             return interaction.reply({ content: "❌ Only the submitter or a Team Manager can cancel this reservation.", flags: 64 });
           }
@@ -2254,7 +2328,7 @@ client.on("interactionCreate", async interaction => {
             new ButtonBuilder().setCustomId(`res_cancel_confirm_${resId}`).setLabel("Yes, Cancel It").setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId(`res_cancel_abort_${resId}`).setLabel("Keep It").setStyle(ButtonStyle.Secondary)
           );
-          return interaction.reply({ content: `⚠️ Cancel reservation for **${res.series}** at **${res.track}** (Team Car #${res.teamCar})?`, components: [row], flags: 64 });
+          return interaction.reply({ content: `⚠️ Cancel reservation for **${res.series}** at **${res.track}** (Team Car #${res.teamCar})?`, components: [row], ...(interaction.guild ? { flags: 64 } : {}) });
         }
 
         if (id.startsWith("res_cancel_confirm_")) {
@@ -2293,8 +2367,12 @@ client.on("interactionCreate", async interaction => {
           const res          = reservations.find(r => r.id === resId);
           if (!res) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
 
-          const member    = await interaction.guild.members.fetch(interaction.user.id);
-          const isManager = member.roles.cache.has(TEAM_MANAGER_ROLE_ID);
+          // Allow from DM (submitter only) or guild (submitter or manager)
+          let isManager = false;
+          if (interaction.guild) {
+            const member = await interaction.guild.members.fetch(interaction.user.id);
+            isManager = member.roles.cache.has(TEAM_MANAGER_ROLE_ID);
+          }
           if (interaction.user.id !== res.submitterId && !isManager) {
             return interaction.reply({ content: "❌ Only the submitter or a Team Manager can edit this reservation.", flags: 64 });
           }
@@ -2303,7 +2381,11 @@ client.on("interactionCreate", async interaction => {
             const dm   = await user.createDM();
             resDmSessions.set(interaction.user.id, { mode: "editTimeslot", resId: res.id, step: "startTime", data: {} });
             await dm.send(`📝 **Edit Timeslot — ${res.series} at ${res.track}**\nWhat is the new start time **in your local time**? *(e.g. 4:00 PM CDT)*`);
-            return interaction.reply({ content: "📬 Check your DMs to update the timeslot.", flags: 64 });
+            if (interaction.guild) {
+              return interaction.reply({ content: "📬 Check your DMs to update the timeslot.", flags: 64 });
+            } else {
+              return interaction.reply({ content: "📝 Go ahead — I'm ready for your new start time." });
+            }
           } catch (e) {
             return interaction.reply({ content: "❌ Couldn't open a DM. Make sure your DMs are open.", flags: 64 });
           }
@@ -2420,8 +2502,35 @@ client.on("interactionCreate", async interaction => {
     return;
   }
 
-  // Modal submit — deny reason
+  // Modal submits
   if (interaction.isModalSubmit()) {
+    // Approve with optional TM notes
+    if (interaction.customId.startsWith("res_approve_modal_")) {
+      const resId        = interaction.customId.replace("res_approve_modal_", "");
+      const tmNotes      = interaction.fields.getTextInputValue("approve_notes")?.trim() || "";
+      const reservations = loadReservations();
+      const idx          = reservations.findIndex(r => r.id === resId);
+      if (idx === -1) return interaction.reply({ content: "⚠️ Reservation not found.", flags: 64 });
+
+      reservations[idx].reviewedAt = Date.now();
+      reservations[idx].reviewedBy = interaction.user.id;
+      if (tmNotes) reservations[idx].managerNotes = tmNotes;
+      saveReservations(reservations);
+
+      await postApprovedReservation(reservations[idx]);
+      await interaction.update({ embeds: [buildManagerRequestEmbed(reservations[idx], "approved")], components: [] });
+
+      // DM approval (manage buttons are sent inside postApprovedReservation, but we add TM notes here if present)
+      if (tmNotes) {
+        try {
+          const driver = await client.users.fetch(reservations[idx].submitterId);
+          await driver.send(`📋 **Note from Team Manager:**\n${tmNotes}`);
+        } catch (e) { console.error("Failed to DM TM notes:", e.message); }
+      }
+      return;
+    }
+
+    // Deny with reason
     if (interaction.customId.startsWith("res_deny_modal_")) {
       const resId        = interaction.customId.replace("res_deny_modal_", "");
       const reason       = interaction.fields.getTextInputValue("deny_reason");
