@@ -1315,7 +1315,7 @@ async function getBestAvailableToken(drivers) {
 // Uses chart_data (most accurate) with a cust_id override, falls back to member/profile.
 async function getIRatingByCustId(custId, token, driverName) {
   try {
-    // chart_data with cust_id — works for any member when you're authenticated
+    // chart_data with cust_id — works for any member when authenticated
     const chartRes = await fetch(
       `https://members-ng.iracing.com/data/member/chart_data?chart_type=1&category_id=5&cust_id=${custId}`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -1328,14 +1328,24 @@ async function getIRatingByCustId(custId, token, driverName) {
         if (dataRes.ok) {
           const data = await dataRes.json();
           if (data?.data?.length > 0) {
-            return data.data[data.data.length - 1].value;
+            const last = data.data[data.data.length - 1];
+            // iRacing has used "value", "irating", and "rating" at various times
+            const ir = last?.value ?? last?.irating ?? last?.rating;
+            if (typeof ir === "number" && ir > 0) return ir;
+            console.log(`chart_data unexpected point shape for ${driverName}:`, JSON.stringify(last));
           }
+        } else {
+          console.log(`chart_data S3 fetch failed for ${driverName}: ${dataRes.status}`);
         }
+      } else {
+        console.log(`chart_data no link for ${driverName}: ${JSON.stringify(chartJson).slice(0, 200)}`);
       }
+    } else {
+      console.log(`chart_data HTTP ${chartRes.status} for cust_id=${custId} (${driverName})`);
     }
-    console.log(`chart_data failed for cust_id=${custId} (${driverName}), trying member_summary fallback`);
+    console.log(`chart_data failed for cust_id=${custId} (${driverName}), trying profile fallback`);
 
-    // Fallback: member_summary supports cust_id and includes current licenses/irating
+    // Fallback: member/profile with cust_id includes license/irating data
     const summaryData = await fetchIRacingData(
       token,
       `https://members-ng.iracing.com/data/member/profile?cust_id=${custId}`
@@ -1349,10 +1359,12 @@ async function getIRatingByCustId(custId, token, driverName) {
       } else if (licenses) {
         sportsLic = licenses.sports_car;
       }
-      if (sportsLic?.irating) {
-        console.log(`Got iRating from profile fallback for ${driverName}: ${sportsLic.irating}`);
-        return sportsLic.irating;
+      const irating = sportsLic?.irating ?? sportsLic?.iRating ?? sportsLic?.ir_rating;
+      if (typeof irating === "number" && irating > 0) {
+        console.log(`Got iRating from profile fallback for ${driverName}: ${irating}`);
+        return irating;
       }
+      console.log(`profile fallback no usable iRating for ${driverName}:`, JSON.stringify(sportsLic ?? licenses ?? summaryData).slice(0, 300));
     }
   } catch (e) {
     console.error(`getIRatingByCustId error for ${driverName} (cust_id=${custId}):`, e.message);
@@ -1377,7 +1389,10 @@ async function getCurrentIRating(user) {
         if (chartRes.ok) {
           const chartJson = await chartRes.json();
           if (chartJson.data?.length > 0) {
-            return chartJson.data[chartJson.data.length - 1].value;
+            const last = chartJson.data[chartJson.data.length - 1];
+            const ir = last?.value ?? last?.irating ?? last?.rating;
+            if (typeof ir === "number" && ir > 0) return ir;
+            console.log(`chart_data unexpected point shape for ${user.iracingName}:`, JSON.stringify(last));
           }
         }
       }
@@ -1393,7 +1408,8 @@ async function getCurrentIRating(user) {
       } else if (infoData.licenses) {
         sportsLic = infoData.licenses.sports_car;
       }
-      if (sportsLic?.irating) return sportsLic.irating;
+      const irating = sportsLic?.irating ?? sportsLic?.iRating ?? sportsLic?.ir_rating;
+      if (typeof irating === "number" && irating > 0) return irating;
     }
   } catch (e) {
     console.error(`getCurrentIRating error for ${user.iracingName || user.discordId}:`, e.message);
@@ -1493,18 +1509,29 @@ async function fetchDriverStats(user) {
 
   let irChange = 0, currentIR = user.lastIRating ?? 0;
   if (irChartData?.data?.length >= 2) {
-    const pts = irChartData.data;
-    currentIR = pts[pts.length - 1].value;
-    irChange  = pts[pts.length - 1].value - pts[pts.length - 2].value;
+    const pts  = irChartData.data;
+    const last = pts[pts.length - 1];
+    const prev = pts[pts.length - 2];
+    const lastIr = last?.value ?? last?.irating ?? last?.rating;
+    const prevIr = prev?.value ?? prev?.irating ?? prev?.rating;
+    if (typeof lastIr === "number" && lastIr > 0) {
+      currentIR = lastIr;
+      irChange  = typeof prevIr === "number" ? lastIr - prevIr : 0;
+    }
   }
 
   let srChange = 0, currentSR = 0, rawSR = 0;
   if (srChartData?.data?.length >= 2) {
-    const pts  = srChartData.data;
-    rawSR      = pts[pts.length - 1].value;
-    const prev = pts[pts.length - 2].value;
-    currentSR  = (rawSR % 1000) / 100;
-    srChange   = (rawSR - prev) / 100;
+    const pts    = srChartData.data;
+    const lastPt = pts[pts.length - 1];
+    const prevPt = pts[pts.length - 2];
+    const lastSr = lastPt?.value ?? lastPt?.rating ?? lastPt?.safety_rating;
+    const prevSr = prevPt?.value ?? prevPt?.rating ?? prevPt?.safety_rating;
+    if (typeof lastSr === "number") {
+      rawSR     = lastSr;
+      currentSR = (rawSR % 1000) / 100;
+      srChange  = typeof prevSr === "number" ? (rawSR - prevSr) / 100 : 0;
+    }
   }
 
   // Get license class from member info (real-time), fall back to chart data
@@ -2911,12 +2938,12 @@ async function showLeaderboard(interactionOrChannel, saveBaseline = false) {
           ir = await getIRatingByCustId(driver.customerId, tokenResult.token, driver.iracingName);
         }
 
-        if (ir === null) {
+        if (typeof ir !== "number" || ir <= 0) {
           // Last resort: try the driver's own token
           ir = await getCurrentIRating(driver);
         }
 
-        if (ir !== null) {
+        if (typeof ir === "number" && ir > 0) {
           driver.lastIRating = ir;
           driver.tokenFailed = false;
           // Weekly change = current iRating vs Sunday baseline
