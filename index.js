@@ -1122,7 +1122,10 @@ async function handleResDmButton(interaction) {
       return interaction.reply({ content: "⚠️ Please select **hour**, **minutes**, and **timezone** before confirming.", flags: 64 });
     }
 
-    const TZ_OFFSETS = { EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7 };
+    const TZ_OFFSETS = {
+      EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7,
+      GMT:  0, BST:  1, CET:  1, CEST:  2, EET:  2, EEST:  3,
+    };
     const h24        = parseInt(tempHour);
     const mins       = parseInt(tempMin);
     const offset     = TZ_OFFSETS[tempTz] ?? 0;
@@ -1254,9 +1257,10 @@ function buildTimeStepMessage(session) {
   const minOptions = ["00", "15", "30", "45"].map(m =>
     new StringSelectMenuOptionBuilder().setLabel(`:${m}`).setValue(m).setDefault(tm === m)
   );
-  const tzOptions = ["EST", "EDT", "CST", "CDT", "MST", "MDT", "PST", "PDT"].map(t =>
-    new StringSelectMenuOptionBuilder().setLabel(t).setValue(t).setDefault(tz === t)
-  );
+  const tzOptions = [
+    "EST", "EDT", "CST", "CDT", "MST", "MDT", "PST", "PDT",
+    "GMT", "BST", "CET", "CEST", "EET", "EEST",
+  ].map(t => new StringSelectMenuOptionBuilder().setLabel(t).setValue(t).setDefault(tz === t));
 
   const parts = [];
   if (th != null) {
