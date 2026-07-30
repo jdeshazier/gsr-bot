@@ -14,7 +14,9 @@ const {
   ActionRowBuilder,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder
 } = require("discord.js");
 const express = require("express");
 const fetch = require("node-fetch");
@@ -912,7 +914,7 @@ async function promptResStep(session, dm) {
     return dm.send(`**Step ${n}/${TOTAL} — Date**\nWhat date is the race? *(MM/DD/YY — e.g. 08/02/26)*${backHint}`);
   }
   if (step === "startTime") {
-    return dm.send(`**Step ${n}/${TOTAL} — Start Time**\nWhat time does it start **in your local time**? *(e.g. 3:00 PM CDT)*${backHint}`);
+    return dm.send(buildTimeStepMessage(session));
   }
   if (step === "timeslot") {
     return dm.send(`**Step ${n}/${TOTAL} — Timeslot**\nWhat timeslot is that? *(e.g. Timeslot 2)*${backHint}`);
@@ -991,9 +993,7 @@ async function handleResDmText(userId, content, dm) {
   // Edit-timeslot mode (started from clicking Edit button in #event-reservations)
   if (session.mode === "editTimeslot") {
     if (session.step === "startTime") {
-      session.data.newStartTime = content;
-      session.step = "timeslot";
-      return dm.send("What timeslot is that? *(e.g. Timeslot 2)*");
+      return dm.send("Please use the **dropdowns** to select your new start time, then click **✅ Set Time**.");
     }
     if (session.step === "timeslot") {
       const newTimeslot = content;
@@ -1008,8 +1008,9 @@ async function handleResDmText(userId, content, dm) {
       }
 
       const oldTimeslot = reservations[idx].timeslot;
-      reservations[idx].startTime = session.data.newStartTime;
-      reservations[idx].timeslot  = newTimeslot;
+      reservations[idx].startTime    = session.data.newStartTime;
+      reservations[idx].startTimeUnix = session.data.newStartTimeUnix ?? null;
+      reservations[idx].timeslot     = newTimeslot;
       saveReservations(reservations);
       resDmSessions.delete(userId);
 
@@ -1031,7 +1032,9 @@ async function handleResDmText(userId, content, dm) {
             .addFields(
               { name: "Team Car",       value: `#${reservations[idx].teamCar}`, inline: true },
               { name: "Old Timeslot",   value: oldTimeslot,                     inline: true },
-              { name: "New Start Time", value: `${session.data.newStartTime} | ${newTimeslot}`, inline: true }
+              { name: "New Start Time", value: session.data.newStartTimeUnix
+                  ? `<t:${session.data.newStartTimeUnix}:F> | ${newTimeslot}`
+                  : `${session.data.newStartTime} | ${newTimeslot}`, inline: true }
             )
           ]
         });
@@ -1063,9 +1066,7 @@ async function handleResDmText(userId, content, dm) {
   if (s === "track")     { d.track = content;     session.step = "date";      return promptResStep(session, dm); }
   if (s === "date")      { d.date = content;      session.step = "startTime"; return promptResStep(session, dm); }
   if (s === "startTime") {
-    d.startTime = content;
-    session.step = "timeslot";
-    return promptResStep(session, dm);
+    return dm.send("Please use the **dropdowns** above to select your hour, minutes, and timezone, then click **✅ Set Time**.");
   }
   if (s === "timeslot") {
     d.timeslot = content;
@@ -1103,8 +1104,51 @@ async function handleResDmButton(interaction) {
     if (!session) return interaction.update({ content: "⚠️ Session expired.", components: [] });
     const prevStep = RES_STEP_BACK[session.step];
     if (!prevStep) return interaction.update({ content: "Already at the first step.", components: [] });
+    // Clear temp time selections when leaving startTime so they reset cleanly
+    if (session.step === "startTime") {
+      delete session.data.tempHour;
+      delete session.data.tempMin;
+      delete session.data.tempTz;
+    }
     session.step = prevStep;
     await interaction.update({ content: "↩️ Going back…", components: [] });
+    return promptResStep(session, interaction.channel);
+  }
+
+  if (id === "resdm_confirm_time") {
+    if (!session) return interaction.reply({ content: "⚠️ Session expired. Run `/reserve` again.", flags: 64 });
+    const { tempHour, tempMin, tempTz } = session.data;
+    if (tempHour == null || tempMin == null || !tempTz) {
+      return interaction.reply({ content: "⚠️ Please select **hour**, **minutes**, and **timezone** before confirming.", flags: 64 });
+    }
+
+    const TZ_OFFSETS = { EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7 };
+    const h24        = parseInt(tempHour);
+    const mins       = parseInt(tempMin);
+    const offset     = TZ_OFFSETS[tempTz] ?? 0;
+    const hourLabel  = h24 === 0 ? "12" : h24 <= 12 ? String(h24) : String(h24 - 12);
+    const ampm       = h24 < 12 ? "AM" : "PM";
+    const timeString = `${hourLabel}:${tempMin} ${ampm} ${tempTz}`;
+
+    // Compute UTC Unix timestamp from date + local time + timezone offset
+    const dateStr = session.data.date ?? session.data.newDate;
+    const [mm, dd, yy] = (dateStr ?? "").split("/");
+    const year   = yy?.length === 2 ? 2000 + parseInt(yy) : parseInt(yy ?? "0");
+    const month  = parseInt(mm ?? "1") - 1;
+    const day    = parseInt(dd ?? "1");
+    const utcMs  = Date.UTC(year, month, day, h24, mins, 0);
+    const unixTs = Math.floor((utcMs - offset * 3_600_000) / 1000);
+
+    if (session.mode === "editTimeslot") {
+      session.data.newStartTime    = timeString;
+      session.data.newStartTimeUnix = unixTs;
+    } else {
+      session.data.startTime    = timeString;
+      session.data.startTimeUnix = unixTs;
+    }
+
+    session.step = "timeslot";
+    await interaction.update({ content: `✅ Time set: **${timeString}**`, components: [] });
     return promptResStep(session, interaction.channel);
   }
 
@@ -1179,6 +1223,73 @@ async function handleResDmButton(interaction) {
   }
 }
 
+async function handleResDmSelect(interaction) {
+  const id      = interaction.customId;
+  const userId  = interaction.user.id;
+  const session = resDmSessions.get(userId);
+
+  if (!session || session.step !== "startTime") {
+    return interaction.update({ content: "⚠️ Session expired or no longer on this step.", components: [] });
+  }
+
+  if (id === "resdm_select_hour") session.data.tempHour = interaction.values[0];
+  if (id === "resdm_select_min")  session.data.tempMin  = interaction.values[0];
+  if (id === "resdm_select_tz")   session.data.tempTz   = interaction.values[0];
+
+  return interaction.update(buildTimeStepMessage(session));
+}
+
+function buildTimeStepMessage(session) {
+  const th = session.data.tempHour ?? null;
+  const tm = session.data.tempMin  ?? null;
+  const tz = session.data.tempTz   ?? null;
+
+  const hourOptions = [];
+  for (let h = 0; h < 24; h++) {
+    const lbl = h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`;
+    hourOptions.push(
+      new StringSelectMenuOptionBuilder().setLabel(lbl).setValue(String(h)).setDefault(th === String(h))
+    );
+  }
+  const minOptions = ["00", "15", "30", "45"].map(m =>
+    new StringSelectMenuOptionBuilder().setLabel(`:${m}`).setValue(m).setDefault(tm === m)
+  );
+  const tzOptions = ["EST", "EDT", "CST", "CDT", "MST", "MDT", "PST", "PDT"].map(t =>
+    new StringSelectMenuOptionBuilder().setLabel(t).setValue(t).setDefault(tz === t)
+  );
+
+  const parts = [];
+  if (th != null) {
+    const h = parseInt(th);
+    parts.push(`Hour: **${h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`}**`);
+  }
+  if (tm != null) parts.push(`Minutes: **:${tm}**`);
+  if (tz != null) parts.push(`Timezone: **${tz}**`);
+  const status = parts.length ? `\n${parts.join(" | ")}` : "";
+
+  const TOTAL = 10;
+  const n     = session.mode === "editTimeslot" ? "?" : 4;
+
+  return {
+    content: `**Step ${n}/${TOTAL} — Start Time**\nSelect the hour, minutes, and your timezone, then click **✅ Set Time**.${status}`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId("resdm_select_hour").setPlaceholder("Hour").addOptions(hourOptions)
+      ),
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId("resdm_select_min").setPlaceholder("Minutes").addOptions(minOptions)
+      ),
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId("resdm_select_tz").setPlaceholder("Timezone").addOptions(tzOptions)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("resdm_back").setLabel("← Back").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("resdm_confirm_time").setLabel("✅ Set Time").setStyle(ButtonStyle.Primary)
+      ),
+    ],
+  };
+}
+
 function buildReservationEmbed(res) {
   const cls      = res.teamCarClass || getCarClass(res.teamCar) || "?";
   const drivers  = [res.submitterName, ...(res.teammates || [])].join(", ");
@@ -1219,7 +1330,7 @@ function buildManagerRequestEmbed(res, overrideStatus) {
       { name: "​",       value: "​",                inline: true },
       { name: "Track",        value: res.track,               inline: true },
       { name: "Date",         value: res.date,                inline: true },
-      { name: "Start Time",   value: `${res.startTime} | ${res.timeslot}`, inline: true },
+      { name: "Start Time",   value: res.startTimeUnix ? `<t:${res.startTimeUnix}:F> | ${res.timeslot}` : `${res.startTime} | ${res.timeslot}`, inline: true },
       { name: "Team Car",     value: `#${res.teamCar} (${cls})`,           inline: true },
       { name: "Car Running",  value: res.carRunning,                       inline: true },
       { name: "Drivers",      value: drivers,                              inline: false },
@@ -2292,6 +2403,12 @@ client.once("clientReady", async () => {
 });
 
 client.on("interactionCreate", async interaction => {
+  // Reservation DM flow — select menus (hour / minute / timezone)
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith("resdm_select_")) {
+    try { return await handleResDmSelect(interaction); }
+    catch (e) { console.error("handleResDmSelect error:", e); }
+  }
+
   // Button interactions
   if (interaction.isButton()) {
     try {
@@ -2424,8 +2541,10 @@ client.on("interactionCreate", async interaction => {
           try {
             const user = await client.users.fetch(interaction.user.id);
             const dm   = await user.createDM();
-            resDmSessions.set(interaction.user.id, { mode: "editTimeslot", resId: res.id, step: "startTime", data: {} });
-            await dm.send(`📝 **Edit Timeslot — ${res.series} at ${res.track}**\nWhat is the new start time **in your local time**? *(e.g. 4:00 PM CDT)*`);
+            const editSession = { mode: "editTimeslot", resId: res.id, step: "startTime", data: {} };
+            resDmSessions.set(interaction.user.id, editSession);
+            const editMsg = buildTimeStepMessage(editSession);
+            await dm.send({ content: `📝 **Edit Timeslot — ${res.series} at ${res.track}**\n${editMsg.content}`, components: editMsg.components });
             if (interaction.guild) {
               return interaction.reply({ content: "📬 Check your DMs to update the timeslot.", flags: 64 });
             } else {
