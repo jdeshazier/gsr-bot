@@ -859,19 +859,37 @@ function parseReservationDateTime(date, startTime) {
   const TZ_OFFSETS = { EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7 };
   let offsetHours = 0;
   let timeStr = startTime.trim();
-  const tzMatch = timeStr.match(/\b(EST|EDT|CST|CDT|MST|MDT|PST|PDT)\b/i);
-  if (tzMatch) { offsetHours = TZ_OFFSETS[tzMatch[1].toUpperCase()] ?? 0; timeStr = timeStr.replace(tzMatch[0], "").trim(); }
 
-  // Accept MM/DD/YY or MM/DD/YYYY
+  const tzMatch = timeStr.match(/\b(EST|EDT|CST|CDT|MST|MDT|PST|PDT)\b/i);
+  if (tzMatch) {
+    offsetHours = TZ_OFFSETS[tzMatch[1].toUpperCase()] ?? 0;
+    timeStr = timeStr.replace(tzMatch[0], "").trim();
+  }
+
+  // Parse date — accept MM/DD/YY or MM/DD/YYYY
   const dateParts = date.trim().split("/");
   if (dateParts.length !== 3) return null;
-  let [mm, dd, yy] = dateParts;
-  const year = yy.length === 2 ? 2000 + parseInt(yy, 10) : parseInt(yy, 10);
-  const combined = `${year}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")} ${timeStr}`;
-  const d = new Date(combined);
-  if (isNaN(d.getTime())) return null;
-  // Shift from driver's local timezone to UTC
-  return Math.floor((d.getTime() - offsetHours * 3600000) / 1000);
+  const [mm, dd, yy] = dateParts;
+  const year  = yy.length === 2 ? 2000 + parseInt(yy, 10) : parseInt(yy, 10);
+  const month = parseInt(mm, 10) - 1; // 0-indexed for Date.UTC
+  const day   = parseInt(dd, 10);
+  if (isNaN(year) || isNaN(month + 1) || isNaN(day)) return null;
+
+  // Parse time — accepts "10am", "10 am", "10:30am", "10:30 AM", "22:30"
+  const timeMatch = timeStr.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!timeMatch) return null;
+  let hours  = parseInt(timeMatch[1], 10);
+  const mins = parseInt(timeMatch[2] ?? "0", 10);
+  const mer  = (timeMatch[3] ?? "").toLowerCase();
+  if (mer === "pm" && hours !== 12) hours += 12;
+  if (mer === "am" && hours === 12) hours = 0;
+  if (hours > 23 || mins > 59) return null;
+
+  // Date.UTC avoids server timezone contamination — the result is always UTC regardless
+  // of where the bot is hosted. Then subtract the driver's UTC offset to convert their
+  // local time to real UTC. e.g. "10:00 EDT" (UTC-4): UTC = 10:00 - (-4h) = 14:00 UTC
+  const localAsUtcMs = Date.UTC(year, month, day, hours, mins, 0);
+  return Math.floor((localAsUtcMs - offsetHours * 3600_000) / 1000);
 }
 
 async function promptResStep(session, dm) {
