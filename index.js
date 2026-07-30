@@ -1298,9 +1298,7 @@ function buildReservationEmbed(res) {
   const cls      = res.teamCarClass || getCarClass(res.teamCar) || "?";
   const drivers  = [res.submitterName, ...(res.teammates || [])].join(", ");
   const cancelled = res.status === "cancelled";
-  const timeValue = res.startTimeUnix
-    ? `<t:${res.startTimeUnix}:F> | ${res.timeslot}`
-    : `${res.startTime} | ${res.timeslot}`;
+  const timeValue = `${res.startTime} | ${res.timeslot}`;
 
   return new EmbedBuilder()
     .setColor(cancelled ? 0x95a5a6 : 0x2ecc71)
@@ -1334,7 +1332,7 @@ function buildManagerRequestEmbed(res, overrideStatus) {
       { name: "​",       value: "​",                inline: true },
       { name: "Track",        value: res.track,               inline: true },
       { name: "Date",         value: res.date,                inline: true },
-      { name: "Start Time",   value: res.startTimeUnix ? `<t:${res.startTimeUnix}:F> | ${res.timeslot}` : `${res.startTime} | ${res.timeslot}`, inline: true },
+      { name: "Start Time",   value: `${res.startTime} | ${res.timeslot}`, inline: true },
       { name: "Team Car",     value: `#${res.teamCar} (${cls})`,           inline: true },
       { name: "Car Running",  value: res.carRunning,                       inline: true },
       { name: "Drivers",      value: drivers,                              inline: false },
