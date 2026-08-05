@@ -1032,9 +1032,7 @@ async function handleResDmText(userId, content, dm) {
             .addFields(
               { name: "Team Car",       value: `#${reservations[idx].teamCar}`, inline: true },
               { name: "Old Timeslot",   value: oldTimeslot,                     inline: true },
-              { name: "New Start Time", value: session.data.newStartTimeUnix
-                  ? `<t:${session.data.newStartTimeUnix}:F> | ${newTimeslot}`
-                  : `${session.data.newStartTime} | ${newTimeslot}`, inline: true }
+              { name: "New Start Time", value: `${session.data.newStartTime} | ${newTimeslot}`, inline: true }
             )
           ]
         });
