@@ -2880,6 +2880,16 @@ client.on("interactionCreate", async interaction => {
     await postOrUpdateTimeTrial(client);
   }
 
+  if (interaction.commandName === "refreshtrial") {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return interaction.reply({ content: "❌ Administrators only.", flags: 64 });
+    }
+    await interaction.deferReply({ flags: 64 });
+    await startNewTimeTrial(client);
+    const tt = loadTimeTrial();
+    return interaction.editReply({ content: `✅ New time trial generated!\n**Class:** ${tt.classKey}\n**Car:** ${tt.car}\n**Track:** ${tt.track}` });
+  }
+
   if (interaction.commandName === "deletelap") {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({ content: "❌ Administrators only.", flags: 64 });
@@ -3171,6 +3181,7 @@ const commands = [
       { name: "screenshot", description: "Screenshot proof of your lap time", type: 11, required: true }
     ]
   },
+  { name: "refreshtrial", description: "(Admin) Replace the current month's time trial with a new random car + track" },
   {
     name: "deletelap",
     description: "(Admin) Delete a driver's time trial submission",
